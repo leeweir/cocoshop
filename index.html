@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#ffd9e7" />
+    <meta name="description" content="桃桃茶屋：在粉桃与薄荷色的 3D 小店里，为可爱的客人们调一杯刚刚好的奶茶。" />
+    <title>桃桃茶屋 · Peach & Mint</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&family=ZCOOL+KuaiLe&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='18' fill='%23ffd0e1'/><path d='M18 24h28l-3 24a8 8 0 0 1-8 7h-6a8 8 0 0 1-8-7l-3-24Z' fill='%23fffaf3'/><path d='M20 33h24l-2 15a8 8 0 0 1-8 7h-4a8 8 0 0 1-8-7l-2-15Z' fill='%23f7a9c4'/><circle cx='26' cy='44' r='2.2' fill='%235c3a2e'/><circle cx='34' cy='47' r='2.2' fill='%235c3a2e'/><circle cx='39' cy='41' r='2.2' fill='%235c3a2e'/><path d='M35 24 44 10' stroke='%238ed8bc' stroke-width='4' stroke-linecap='round'/><path d='M21 24c0-6 5-11 11-11s11 5 11 11' fill='none' stroke='%23f6a9c3' stroke-width='3'/></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene" aria-label="桃桃茶屋 3D 店面"></canvas>
+      <div class="scene-wash"></div>
+      <div class="scene-vignette"></div>
+      <div class="ui-petals" id="ui-petals" aria-hidden="true"></div>
+      <div id="world-ui" class="world-ui"></div>
+      <div id="hud" class="hud"></div>
+      <div id="screen-root" class="screen-root"></div>
+      <div id="toast-root" class="toast-root" aria-live="polite"></div>
+      <div id="flash" class="flash-layer"></div>
+      <div id="boot" class="boot">
+        <div class="boot-mark">
+          <div class="boot-cup"><i></i><i></i><i></i></div>
+          <div class="boot-name">桃桃茶屋</div>
+          <div class="boot-sub">正在煮茶、摆好杯子…</div>
+          <div class="boot-bar"><span></span></div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
