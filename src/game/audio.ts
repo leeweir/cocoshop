@@ -48,6 +48,14 @@ export class AudioEngine {
     }
   }
 
+  dispose() {
+    this.enabled = false;
+    void this.ctx?.close();
+    this.ctx = null;
+    this.master = null;
+    this.noiseBuffer = null;
+  }
+
   unlock() {
     if (!this.enabled) return;
     if (!this.ctx) {

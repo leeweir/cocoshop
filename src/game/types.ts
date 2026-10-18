@@ -9,6 +9,33 @@ export type SizeType = 'medium' | 'large';
 export type ProductCategory = 'tea' | 'milkshake' | 'icecream';
 export type FinishMode = 'shake' | 'blend' | 'scoop';
 export type OrderChannel = 'dine-in' | 'delivery';
+export type DrinkSource = 'city' | 'travel';
+
+export type CitySpotId = 'market' | 'bakery' | 'flower' | 'airclub' | 'home' | 'shop';
+export type SupplyId = 'peach_crate' | 'jasmine_tin' | 'pearl_pouch' | 'sea_cream';
+
+export interface CitySave {
+  /** The upcoming day this evening belongs to; used to reset slots once. */
+  evening: number;
+  slotsLeft: number;
+  supplies: SupplyId[];
+  recipes: string[];
+  stories: string[];
+  usedSpots: string[];
+  visits: number;
+  plane: boolean;
+  /** Chapter already paid for but not finished; survives a mid-trip reload. */
+  traveling: string | null;
+}
+
+export interface TravelRecord {
+  stars: number;
+  day: number;
+}
+
+export interface TravelSave {
+  chapters: Record<string, TravelRecord>;
+}
 
 export interface Recipe {
   tea: TeaBase;
@@ -79,6 +106,7 @@ export interface DrinkDef {
   category: ProductCategory;
   finish: FinishMode;
   recipe: Recipe;
+  source?: DrinkSource;
 }
 
 export interface DayTheme {
@@ -124,6 +152,8 @@ export type UpgradeId = 'seat' | 'sign' | 'display' | 'training';
 export interface SaveData {
   version: number;
   day: number;
+  /** The shift just completed whose post-shift shop has not been left yet. */
+  pendingShopDay?: number;
   coins: number;
   totalCoinsEarned: number;
   bestRevenue: number;
@@ -137,6 +167,8 @@ export interface SaveData {
   bestDeliveryRating: number;
   tutorialSeen: boolean;
   sound: boolean;
+  city: CitySave;
+  travel: TravelSave;
 }
 
 export interface PlayerState {
@@ -151,6 +183,7 @@ export interface PlayerState {
   maxComboToday: number;
   orders: OrderState[];
   completedOrders: CompletedOrder[];
+  supplies: SupplyId[];
 }
 
 export interface DeliveryInfo {
@@ -231,5 +264,7 @@ export type ScreenId =
   | 'notebook'
   | 'summary'
   | 'shop'
+  | 'city'
+  | 'travel'
   | 'pause'
   | 'help';

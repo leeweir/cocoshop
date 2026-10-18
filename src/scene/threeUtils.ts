@@ -131,6 +131,18 @@ export function softShadowTexture(): THREE.CanvasTexture {
   });
 }
 
+/** Warm contact shadow placed directly beneath objects to ground them. */
+export function contactShadowTexture(): THREE.CanvasTexture {
+  return makeCanvasTexture(256, 256, (ctx, w, h) => {
+    const g = ctx.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w / 2);
+    g.addColorStop(0, 'rgba(92, 62, 68, 0.24)');
+    g.addColorStop(0.42, 'rgba(92, 62, 68, 0.1)');
+    g.addColorStop(1, 'rgba(92, 62, 68, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  });
+}
+
 export function heartTexture(color = '#ff8dae'): THREE.CanvasTexture {
   return makeCanvasTexture(128, 128, (ctx) => {
     ctx.translate(64, 64);

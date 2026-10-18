@@ -172,6 +172,34 @@ export class CupPreview {
     }
   }
 
+  dispose() {
+    this.active = false;
+    if (this.cup) {
+      this.cupRoot.remove(this.cup.group);
+      disposeCup(this.cup.group);
+      this.cup = null;
+    }
+    for (const sprite of this.sparkles) {
+      this.scene.remove(sprite);
+      const material = sprite.material as THREE.SpriteMaterial;
+      material.map?.dispose();
+      material.dispose();
+    }
+    this.sparkles = [];
+    (this.halo.material as THREE.SpriteMaterial).dispose();
+    for (const texture of this.haloCache.values()) texture.dispose();
+    this.haloCache.clear();
+    this.scene.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.geometry.dispose();
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) material.dispose();
+      }
+    });
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
+  }
+
   resize() {
     const parent = this.canvas.parentElement;
     if (!parent) return;
@@ -187,7 +215,9 @@ export class CupPreview {
 
   private frameCamera() {
     const targetH = this.targetHeight() * (this.selections?.size === 'large' ? 1.12 : 1);
-    const viewH = targetH * 1.24;
+    // Wide, short preview stages (mobile) need extra headroom for the pedestal.
+    const heightFactor = this.camera.aspect > 1.8 ? 1.45 : 1.24;
+    const viewH = targetH * heightFactor;
     const distance = viewH / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
     this.camera.position.set(0.08, targetH * 0.56, Math.max(2.6, distance));
     this.camera.lookAt(0, targetH * 0.45, 0);

@@ -22,7 +22,18 @@ import {
   recipeValueLabelFor,
   recipeValueMeta,
 } from '../game/data';
+import {
+  CITY_EVENING_SLOTS,
+  CITY_SPOTS,
+  CITY_SUPPLY_LIMIT,
+  TRAVEL_CHAPTERS,
+  TRAVEL_COST_COINS,
+  TRAVEL_COST_SLOTS,
+  type SupplyDef,
+  type TravelChapterDef,
+} from '../game/expansion';
 import type {
+  CitySpotId,
   CraftSelections,
   CraftStep,
   CustomerDef,
@@ -34,6 +45,8 @@ import type {
   Recipe,
   SaveData,
   ServeResult,
+  SupplyId,
+  TravelRecord,
   UpgradeId,
 } from '../game/types';
 import type { BubbleAnchor } from '../scene/CafeScene';
@@ -72,6 +85,24 @@ export interface UiActions {
   answerChat(index: number): void;
   finishChat(): void;
   packItem(id: string): void;
+  openCity(): void;
+  closeCity(): void;
+  visitCitySpot(spot: CitySpotId): void;
+  cityStoryChoice(index: number): void;
+  cityBackToPanel(): void;
+  buySupply(id: SupplyId): void;
+  openTravel(): void;
+  closeTravel(): void;
+  startTravelChapter(id: string): void;
+  resumeTravelChapter(): void;
+  travelNext(): void;
+  travelChoose(index: number): void;
+  travelTimingTap(): void;
+  travelQuizAnswer(index: number): void;
+  travelQuizNext(): void;
+  travelFinish(): void;
+  travelBackToJournal(): void;
+  travelRevisit(id: string): void;
 }
 
 export interface HudState {
@@ -156,6 +187,8 @@ export interface DayIntroView {
   config: DayConfig;
   coins: number;
   tutorialSeen: boolean;
+  supplies: SupplyDef[];
+  travelBonus: number;
 }
 
 export interface OrderSlipView {
@@ -220,6 +253,15 @@ export interface ShopView {
   nextShift: number;
   nextNewDrinks: DrinkDef[];
   servedTotal: number;
+  supplies: SupplyDef[];
+  limited: DrinkDef[];
+  city: {
+    slotsLeft: number;
+    plane: boolean;
+    visits: number;
+    travelDone: number;
+    travelBonus: number;
+  };
 }
 
 export interface PauseView {
@@ -228,6 +270,93 @@ export interface PauseView {
   goal: number;
   hearts: number;
   sound: boolean;
+  supplies: SupplyDef[];
+  travelBonus: number;
+}
+
+export interface CitySupplyView {
+  def: SupplyDef;
+  count: number;
+  canBuy: boolean;
+}
+
+export interface CityStoryChoiceView {
+  label: string;
+  reply: string | null;
+}
+
+export interface CityStoryView {
+  id: string;
+  kicker: string;
+  title: string;
+  text: string;
+  choices: CityStoryChoiceView[];
+  replyIndex: number | null;
+  rewardLines: string[];
+  repeat: boolean;
+  planeUnlocked: boolean;
+  recipe: DrinkDef | null;
+}
+
+export interface CityView {
+  day: number;
+  coins: number;
+  slotsLeft: number;
+  supplies: SupplyDef[];
+  recipes: DrinkDef[];
+  plane: boolean;
+  visits: number;
+  activeSpot: CitySpotId | null;
+  usedSpots: CitySpotId[];
+  market: CitySupplyView[];
+  story: CityStoryView | null;
+  travelDone: number;
+  travelBonus: number;
+}
+
+export interface TravelChapterCardView {
+  def: TravelChapterDef;
+  unlocked: boolean;
+  record: TravelRecord | null;
+}
+
+export interface TravelView {
+  coins: number;
+  slotsLeft: number;
+  chapters: TravelChapterCardView[];
+  completed: number;
+  bonus: number;
+  plane: boolean;
+  interrupted: TravelChapterDef | null;
+}
+
+export interface TravelMiniView {
+  mode: 'timing' | 'quiz';
+  taps: number;
+  tapsNeeded: number;
+  scores: number[];
+  zone: number;
+  done: boolean;
+  stars: number;
+  unit: string;
+  quizIndex: number;
+  quizTotal: number;
+  quizCorrect: number;
+  quizAnswered: number | null;
+  quizDone: boolean;
+}
+
+export interface TravelSessionView {
+  chapter: TravelChapterDef;
+  phase: 'scene' | 'choice' | 'mini' | 'result';
+  beat: number;
+  replyIndex: number | null;
+  reply: string | null;
+  mini: TravelMiniView | null;
+  stars: number;
+  earned: number;
+  bonus: number;
+  revisit: boolean;
 }
 
 export interface HelpView {
@@ -427,6 +556,46 @@ function cupDoodle(caption: string): string {
   `;
 }
 
+const CITY_MAP: Record<CitySpotId, { x: number; y: number }> = {
+  shop: { x: 15, y: 76 },
+  market: { x: 35, y: 42 },
+  bakery: { x: 57, y: 27 },
+  flower: { x: 78, y: 42 },
+  airclub: { x: 88, y: 74 },
+  home: { x: 41, y: 88 },
+};
+
+const CITY_SHORT: Record<CitySpotId, string> = {
+  shop: '桃桃茶屋',
+  market: '原料市场',
+  bakery: '栗子面包房',
+  flower: '蓝莓花店',
+  airclub: '航空俱乐部',
+  home: '家',
+};
+
+function citySlotsHtml(slotsLeft: number): string {
+  return `<span class="city-slots" aria-label="还剩 ${slotsLeft} 段傍晚时光">${Array.from(
+    { length: CITY_EVENING_SLOTS },
+    (_, i) => `<i class="${i < slotsLeft ? 'is-on' : ''}">${icon('moon')}</i>`,
+  ).join('')}</span>`;
+}
+
+function supplyChips(supplies: SupplyDef[], empty = '还没有准备明日特供'): string {
+  if (supplies.length === 0) return `<span class="supply-empty">${empty}</span>`;
+  return supplies
+    .map(
+      (supply) => `<span class="supply-chip" style="--supply:${supply.color}">
+        ${icon(supply.icon)}<b>${supply.name}</b><small>${supply.shortLabel}</small>
+      </span>`,
+    )
+    .join('');
+}
+
+function travelStars(stars: number): string {
+  return starRow(Math.max(0, Math.min(3, stars)) / 3);
+}
+
 export class Screens {
   private actions: UiActions;
   private screenRoot: HTMLElement;
@@ -442,10 +611,14 @@ export class Screens {
   private currentCraft: CraftView | null = null;
   private shakePointer: HTMLElement | null = null;
   private shakeZone = 0.11;
+  private travelPointer: HTMLElement | null = null;
   private notebookData: NotebookView | null = null;
   private notebookTab: NotebookTab = 'orders';
   private soundEnabled = true;
   private coachText: string | null = null;
+  private overlayFocus: HTMLElement | null = null;
+  private dialogObserver: MutationObserver | null = null;
+  private focusRaf = 0;
 
   constructor(actions: UiActions) {
     this.actions = actions;
@@ -467,6 +640,25 @@ export class Screens {
     this.worldRoot.appendChild(this.deliveryRoot);
     this.buildHud();
     this.bindEvents();
+    document.addEventListener('keydown', this.onFocusKeyDown);
+    this.dialogObserver = new MutationObserver(() => this.queueDialogFocus());
+    this.dialogObserver.observe(this.screenRoot, { childList: true, subtree: true });
+  }
+
+  dispose() {
+    this.dialogObserver?.disconnect();
+    this.dialogObserver = null;
+    cancelAnimationFrame(this.focusRaf);
+    this.focusRaf = 0;
+    this.screenRoot.removeEventListener('click', this.onClickRoot);
+    this.hudRoot.removeEventListener('click', this.onClickRoot);
+    this.worldRoot.removeEventListener('click', this.onClickRoot);
+    this.screenRoot.removeEventListener('pointerdown', this.onPointerDownRoot);
+    document.removeEventListener('keydown', this.onFocusKeyDown);
+    this.deliveryRoot.remove();
+    for (const entry of this.bubbles.values()) entry.el.remove();
+    this.bubbles.clear();
+    this.deliveryCards.clear();
   }
 
   // ───────────────────────────────────────── persistent HUD
@@ -665,6 +857,14 @@ export class Screens {
   setOverlayActive(active: boolean) {
     this.hudRoot.classList.toggle('is-dimmed', active);
     this.worldRoot.classList.toggle('is-hidden', active);
+    if (active) {
+      const current = document.activeElement;
+      this.overlayFocus = current instanceof HTMLElement && current !== document.body ? current : null;
+    } else {
+      const restore = this.overlayFocus;
+      this.overlayFocus = null;
+      if (restore?.isConnected) restore.focus({ preventScroll: true });
+    }
   }
 
   hurtHud() {
@@ -710,14 +910,14 @@ export class Screens {
         entry.el.classList.toggle('is-rush', view.order.rush);
       }
 
+      const ratio = Math.max(0, Math.min(1, view.order.patience / Math.max(1, view.order.patienceMax)));
       if (view.order.accepted) {
-        const ratio = Math.max(0, Math.min(1, view.order.patience / Math.max(1, view.order.patienceMax)));
         const fill = entry.el.querySelector<HTMLElement>('.patience-fill');
         if (fill) fill.style.width = `${ratio * 100}%`;
-        const time = entry.el.querySelector<HTMLElement>('.patience-time');
-        if (time) time.textContent = `${Math.ceil(view.order.patience)}s`;
-        entry.el.classList.toggle('is-urgent', ratio < 0.3);
       }
+      const time = entry.el.querySelector<HTMLElement>('.patience-time');
+      if (time) time.textContent = `${Math.ceil(view.order.patience)}s`;
+      entry.el.classList.toggle('is-urgent', ratio < 0.3);
 
       const x = narrow ? Math.max(64, Math.min(window.innerWidth - 64, anchor.x)) : anchor.x;
       entry.el.style.transform = `translate(${x}px, ${anchor.y}px) translate(-50%, calc(-100% - 12px))`;
@@ -726,7 +926,7 @@ export class Screens {
         'aria-label',
         view.order.accepted
           ? `${view.customer.name}的订单，剩余耐心 ${Math.ceil(view.order.patience)} 秒`
-          : `${view.customer.name}在等你点单`,
+          : `${view.customer.name}在等你点单，还剩 ${Math.ceil(view.order.patience)} 秒`,
       );
     }
 
@@ -761,6 +961,7 @@ export class Screens {
           ${miniCup(drink, 'bubble-cup')}
           <span class="bubble-name">${customer.name}${order.vip ? `<em>${icon('crown')}</em>` : ''}</span>
           ${order.rush ? `<span class="bubble-rush">${icon('bolt')} 加急</span>` : ''}
+          <span class="bubble-wait">${icon('clock')}<span class="patience-time">${Math.ceil(order.patience)}s</span></span>
         </span>
         <span class="bubble-hint">“${drink.tagline}”</span>
         <span class="bubble-chips">${reqChips(order.request, categoryOf(drink))}</span>
@@ -828,7 +1029,7 @@ export class Screens {
         <span class="delivery-rail-count" data-delivery-rail-count>0</span>
       </header>
       <div class="delivery-list" data-delivery-list></div>
-      <p class="delivery-rail-foot">${icon('clock')} 接单后开始倒计时，尽快交给骑手</p>
+      <p class="delivery-rail-foot">${icon('clock')} 耐心一直在倒数，接单能多 3 秒，尽快交给骑手</p>
     `;
   }
 
@@ -984,12 +1185,27 @@ export class Screens {
             <div class="day-ribbon"><span>DAY ${pad2(config.day)}</span><i></i><span>${theme.name}</span></div>
             <h1>${config.day === 1 ? '今天，是茶屋的第一天。' : '新的一天，炉子已经热好了。'}</h1>
             <p class="day-hint">“${theme.hint}”</p>
-            <div class="day-stats">
+            <div class="day-stats${config.deliveryEvery > 0 ? ' has-delivery' : ''}">
               <div class="day-stat"><span>今日目标</span><b>¥${config.goal}</b><small>营业额</small></div>
               <div class="day-stat"><span>营业时长</span><b>${formatClock(config.shiftSeconds)}</b><small>慢慢来</small></div>
-              <div class="day-stat"><span>客人耐心</span><b>${Math.round(config.patience)}s</b><small>点单后开始</small></div>
+              <div class="day-stat"><span>客人耐心</span><b>${Math.round(config.patience)}s</b><small>到店就开始</small></div>
               ${config.deliveryEvery > 0 ? `<div class="day-stat is-delivery"><span>外卖骑手</span><b>会来</b><small>第 2 天起</small></div>` : ''}
             </div>
+            ${
+              view.supplies.length || view.travelBonus > 0
+                ? `<div class="day-supplies">
+                    <div class="day-supplies-head">${icon('sparkle')} 今日特供 <span>昨晚的采购与伴手礼，从第一杯开始生效</span></div>
+                    <div class="day-supplies-list">
+                      ${supplyChips(view.supplies, '今天没有额外补给')}
+                      ${
+                        view.travelBonus > 0
+                          ? `<span class="supply-chip is-souvenir" style="--supply:#ffd479">${icon('heartWish')}<b>旅行伴手礼</b><small>小费 +${Math.round(view.travelBonus * 100)}%</small></span>`
+                          : ''
+                      }
+                    </div>
+                  </div>`
+                : ''
+            }
             <div class="day-storefront">
               <div class="day-door" aria-hidden="true">
                 <span class="day-door-awning"></span>
@@ -1091,7 +1307,7 @@ export class Screens {
                         <div class="slip-pack"><span>${icon('delivery')} 出杯后还要打包 ${info?.packaging.length ?? 0} 件</span><div>${packItems}</div></div>
                       </div>
                       <p class="wait-note is-delivery">${icon('clock')} 骑手已经在路上，取餐倒计时现在就开始啦。</p>`
-                    : `<p class="wait-note">${icon('clock')} 记下订单后，客人就开始耐心等待啦。</p>`
+                    : `<p class="wait-note">${icon('clock')} 客人的耐心从到店起就在倒数，快记下订单吧。</p>`
                 }
               </div>
             </section>
@@ -1570,7 +1786,7 @@ export class Screens {
             </button>
           </div>
           <div class="notebook-page" data-notebook-page></div>
-          <footer class="notebook-foot">${icon('leaf')} 小提示：点单后耐心开始倒计时；调饮、闲聊和翻本子时，时间会暂停。</footer>
+          <footer class="notebook-foot">${icon('leaf')} 小提示：客人到店后耐心就开始倒计时；调饮、闲聊和翻本子时，时间会暂停。</footer>
         </article>
       </div>
     `;
@@ -1820,6 +2036,21 @@ export class Screens {
   }
 
   showShop(view: ShopView) {
+    const prevBody = this.screenRoot.querySelector<HTMLElement>('.shop-body');
+    const prevSide = this.screenRoot.querySelector<HTMLElement>('.shop-side');
+    const prevSection = this.screenRoot.querySelector<HTMLElement>('.upgrade-section');
+    const scroll = {
+      body: prevBody?.scrollTop ?? 0,
+      side: prevSide?.scrollTop ?? 0,
+      section: prevSection?.scrollTop ?? 0,
+    };
+    const active =
+      document.activeElement instanceof HTMLElement && this.screenRoot.contains(document.activeElement)
+        ? document.activeElement.closest<HTMLElement>('[data-action]')
+        : null;
+    const focusAction = active?.dataset.action;
+    const focusId = active?.dataset.id;
+
     this.screenRoot.innerHTML = `
       <div class="screen overlay-screen shop-screen">
         <div class="scrim"></div>
@@ -1855,6 +2086,29 @@ export class Screens {
                 }
                 <button type="button" class="btn btn-primary btn-big" data-action="nextDay">开始第 ${view.day + 1} 天 ${icon('arrow')}</button>
               </div>
+              <div class="evening-card ${view.city.slotsLeft <= 0 ? 'is-spent' : ''}">
+                <div class="evening-head">
+                  <div><span class="evening-kicker">${icon('moon')} 今晚的傍晚</span><b>${view.city.slotsLeft > 0 ? '出门走走？' : '今晚已收尾'}</b></div>
+                  ${citySlotsHtml(view.city.slotsLeft)}
+                </div>
+                <p>${view.city.slotsLeft > 0 ? `还有 ${view.city.slotsLeft} 段时光。去街上采购，或者翻翻旅行手账。` : '今晚的散步结束了，明晚还有新的 3 段时光。'}</p>
+                <div class="evening-supplies">
+                  <span>${icon('cart')} 明日特供</span>
+                  <div>${supplyChips(view.supplies, '购物篮还空着')}</div>
+                </div>
+                <div class="evening-actions">
+                  <button type="button" class="btn btn-ghost" data-action="openCity">${icon('car')} 傍晚出门</button>
+                  <button type="button" class="btn ${view.city.plane ? 'btn-primary' : 'btn-ghost'}" data-action="openTravel" ${view.city.plane ? '' : 'disabled'}>
+                    ${icon(view.city.plane ? 'plane' : 'lock')} 旅行手账
+                    <small>${view.city.travelDone}/${TRAVEL_CHAPTERS.length}</small>
+                  </button>
+                </div>
+                <div class="evening-meta">
+                  <span>${icon('heartWish')} 旅行伴手礼</span>
+                  <b>小费 +${Math.round(view.city.travelBonus * 100)}%</b>
+                  ${view.city.plane ? `<em>已去过 ${view.city.visits} 次夜晚散步</em>` : '<em>先去航空俱乐部拿钥匙</em>'}
+                </div>
+              </div>
               <div class="shop-tip">${icon('heart')} 已经服务过 ${view.servedTotal} 位客人，辛苦了。</div>
             </aside>
             <section class="upgrade-section">
@@ -1889,12 +2143,681 @@ export class Screens {
                   </article>`;
                 }).join('')}
               </div>
+              ${
+                view.limited.length
+                  ? `<div class="limited-section">
+                      <div class="upgrade-head">
+                        <div><span>LOOSE PAGES · 限定配方</span><h3>从城市与远方，带回一点点新的甜</h3></div>
+                        <p>已经收进配方手账，也会加入明天的刷单池。</p>
+                      </div>
+                      <div class="limited-grid">
+                        ${view.limited
+                          .map(
+                            (drink) => `<article class="limited-card" style="--drink:${drink.color};--drink-top:${drink.colorTop};--accent:${drink.accent}">
+                              ${miniCup(drink, 'limited-cup')}
+                              <div class="limited-copy">
+                                <span class="limited-badge ${drink.source === 'travel' ? 'is-travel' : 'is-city'}">${drink.source === 'travel' ? `${icon('plane')} 旅行限定` : `${icon('car')} 城市限定`}</span>
+                                <b>${drink.name}</b>
+                                <small>${baseRecipeLineFor(categoryOf(drink), drink.recipe)}</small>
+                              </div>
+                              <em>¥${drink.price}</em>
+                            </article>`,
+                          )
+                          .join('')}
+                      </div>
+                    </div>`
+                  : ''
+              }
             </section>
           </div>
         </article>
       </div>
     `;
     this.setSound(this.soundEnabled);
+
+    const nextBody = this.screenRoot.querySelector<HTMLElement>('.shop-body');
+    if (nextBody) nextBody.scrollTop = scroll.body;
+    const nextSide = this.screenRoot.querySelector<HTMLElement>('.shop-side');
+    if (nextSide) nextSide.scrollTop = scroll.side;
+    const nextSection = this.screenRoot.querySelector<HTMLElement>('.upgrade-section');
+    if (nextSection) nextSection.scrollTop = scroll.section;
+
+    if (focusAction) {
+      const selector = focusId
+        ? `[data-action="${focusAction}"][data-id="${focusId}"]`
+        : `[data-action="${focusAction}"]`;
+      this.screenRoot.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+    }
+  }
+
+  showCity(view: CityView) {
+    const prevPanel = this.screenRoot.querySelector<HTMLElement>('.city-panel');
+    const panelScroll = prevPanel?.scrollTop ?? 0;
+    const activeSpot = view.activeSpot ? CITY_SPOTS.find((spot) => spot.id === view.activeSpot) ?? null : null;
+    const carSpot = CITY_MAP[view.activeSpot ?? 'shop'];
+    const story = view.story;
+
+    const buildings = CITY_SPOTS.map((spot) => {
+      const pos = CITY_MAP[spot.id];
+      const isDone = view.usedSpots.includes(spot.id) && spot.id !== 'market' && spot.id !== 'home' && spot.id !== 'shop';
+      const isActive = view.activeSpot === spot.id;
+      const isClosed = view.slotsLeft <= 0 && spot.id !== 'home' && spot.id !== 'shop' && !isActive;
+      const planeHere = spot.id === 'airclub' && view.plane;
+      return `<button type="button" class="city-building is-${spot.id} ${isActive ? 'is-active' : ''} ${isDone ? 'is-done' : ''} ${isClosed ? 'is-closed' : ''}" style="--x:${pos.x}%;--y:${pos.y}%;--spot:${spot.color}" data-action="visitCitySpot" data-id="${spot.id}" aria-label="${spot.name}">
+        <span class="city-building-sign">${icon(spot.icon)}<b>${CITY_SHORT[spot.id]}</b></span>
+        <span class="city-building-roof"></span>
+        <span class="city-building-body">
+          <i class="city-window w1"></i><i class="city-window w2"></i>
+          <i class="city-window w3"></i>
+          <i class="city-door"></i>
+        </span>
+        <span class="city-building-awning"></span>
+        ${isDone ? '<span class="city-building-tag">今晚来过</span>' : ''}
+        ${isActive ? '<span class="city-building-tag is-here">就在这里</span>' : ''}
+        ${planeHere ? '<span class="city-building-tag is-plane">飞机已解锁</span>' : ''}
+      </button>`;
+    }).join('');
+
+    const marketPanel = () => {
+      const carried = view.supplies.length;
+      const full = carried >= CITY_SUPPLY_LIMIT;
+      return `
+        <div class="city-panel-head" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+          <span class="city-panel-icon">${icon('cart')}</span>
+          <div><small>MORNING MARKET</small><h3>阿婆原料市场</h3><p>“挑点新鲜的回去，明天客人会尝出来的。”</p></div>
+        </div>
+        <p class="city-panel-note">${icon('moon')} 每采购一次消耗 1 段时光 · 最多带 ${CITY_SUPPLY_LIMIT} 份特供</p>
+        <div class="market-list">
+          ${view.market
+            .map(
+              (item) => `<article class="market-item ${item.count > 0 ? 'has-item' : ''}" style="--supply:${item.def.color}">
+                <span class="market-icon">${icon(item.def.icon)}</span>
+                <div class="market-copy">
+                  <b>${item.def.name}${item.count > 0 ? `<em>×${item.count}</em>` : ''}</b>
+                  <p>${item.def.description}</p>
+                  <span>${item.def.effectLabel}</span>
+                </div>
+                <button type="button" class="btn btn-buy market-buy" data-action="buySupply" data-id="${item.def.id}" ${item.canBuy && !full ? '' : 'disabled'}>
+                  <span>${icon('coin')} ${item.def.cost}</span>
+                  <small>${full ? '带不下了' : view.slotsLeft <= 0 ? '时光用完' : view.coins < item.def.cost ? '金币不够' : '采购'}</small>
+                </button>
+              </article>`,
+            )
+            .join('')}
+        </div>
+        <div class="market-foot">
+          <span>已备特供 <b>${carried} / ${CITY_SUPPLY_LIMIT}</b></span>
+          <div>${supplyChips(view.supplies, '购物篮还空着')}</div>
+        </div>
+      `;
+    };
+
+    const storyPanel = (current: NonNullable<CityView['story']>) => {
+      if (current.replyIndex === null) {
+        return `
+          <div class="city-story" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+            <span class="city-story-kicker">${current.kicker}</span>
+            <h3>${current.title}</h3>
+            <p class="city-story-text">${current.text}</p>
+            <div class="city-story-choices">
+              ${current.choices
+                .map(
+                  (choice, i) => `<button type="button" class="city-story-choice" data-action="cityStoryChoice" data-index="${i}">
+                    <span>${pad2(i + 1)}</span><b>${choice.label}</b>${icon('chevron')}
+                  </button>`,
+                )
+                .join('')}
+            </div>
+            <span class="city-story-foot">${icon('heart')} ${current.repeat ? '这段故事已经听过，奖励会少一些。' : '选一个吧，今晚没有对错。'}</span>
+          </div>
+        `;
+      }
+      return `
+        <div class="city-story is-replied" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+          <span class="city-story-kicker">${current.kicker}</span>
+          <h3>${current.title}</h3>
+          <div class="story-reply">
+            ${icon('bubble')}
+            <p>${current.choices[current.replyIndex]?.reply ?? ''}</p>
+          </div>
+          ${
+            current.rewardLines.length
+              ? `<div class="story-rewards">
+                  <span>${icon('sparkle')} 今晚的收获</span>
+                  <div>${current.rewardLines.map((line) => `<b>${line}</b>`).join('')}</div>
+                </div>`
+              : ''
+          }
+          ${
+            current.recipe
+              ? `<div class="story-recipe" style="--drink:${current.recipe.color};--accent:${current.recipe.accent}">
+                  ${miniCup(current.recipe, 'story-recipe-cup')}
+                  <div><span>新配方收进手账</span><b>${current.recipe.name}</b><small>${baseRecipeLineFor(categoryOf(current.recipe), current.recipe.recipe)}</small></div>
+                  ${catBadge(current.recipe, 'is-mini')}
+                </div>`
+              : ''
+          }
+          ${
+            current.planeUnlocked && view.activeSpot === 'airclub'
+              ? `<div class="story-plane">
+                  ${icon('plane')}
+                  <div><b>小桃号，随时可以起飞</b><small>旅行手账已经解锁，每章需要 2 段傍晚时光与 ¥${TRAVEL_COST_COINS} 航油。</small></div>
+                </div>`
+              : ''
+          }
+          <div class="city-story-actions">
+            <button type="button" class="btn btn-primary" data-action="cityBackToPanel">继续走走 ${icon('arrow')}</button>
+            ${view.plane ? `<button type="button" class="btn btn-ghost" data-action="openTravel">${icon('plane')} 翻开旅行手账</button>` : ''}
+          </div>
+        </div>
+      `;
+    };
+
+    const visitPanel = () => {
+      const spot = activeSpot!;
+      if (view.slotsLeft <= 0) {
+        return `<div class="city-used">
+          <span class="city-used-icon is-closed">${icon('moon')}</span>
+          <h3>今晚的时间用完了</h3>
+          <p>街上的灯还亮着，不过该回去啦。${CITY_SHORT[spot.id]}明晚见。</p>
+          <button type="button" class="btn btn-primary" data-action="closeCity">结束今晚，回小店 ${icon('arrow')}</button>
+        </div>`;
+      }
+      return `<div class="city-place-card" style="--spot:${spot.color}">
+        <span class="city-place-icon">${icon(spot.icon)}</span>
+        <small>${spot.latin}</small>
+        <h3>${spot.name}</h3>
+        <p>${spot.tagline}</p>
+        <button type="button" class="btn btn-primary btn-big" data-action="visitCitySpot" data-id="${spot.id}">
+          ${icon('door')} 推门进去 <em>消耗 1 段时光</em>
+        </button>
+        <span class="city-place-hint">${icon('moon')} 拜访会触发一段街坊故事，没有失败。</span>
+      </div>`;
+    };
+
+    const panel = (() => {
+      if (!activeSpot) {
+        return `<div class="city-wander">
+          <span class="city-wander-kicker">${icon('compass')} WHERE TO TONIGHT?</span>
+          <h3>${view.slotsLeft > 0 ? '今晚想去哪儿走走？' : '今晚就到这里吧。'}</h3>
+          <p>${view.slotsLeft > 0 ? '买点明天的原料，去面包房坐一会儿，或者只是看看花店的灯。' : '空着手回家也可以，明天店里还有一整天的甜。'}</p>
+          <div class="city-wander-slots">
+            ${citySlotsHtml(view.slotsLeft)}
+            <span>${view.slotsLeft > 0 ? `还剩 ${view.slotsLeft} 段傍晚时光` : '时光已经用完，可以回家啦'}</span>
+          </div>
+          <div class="city-wander-block">
+            <span>${icon('cart')} 已备特供</span>
+            <div>${supplyChips(view.supplies, '购物篮还空着')}</div>
+          </div>
+          <div class="city-wander-block">
+            <span>${icon('recipe')} 从街上带回的配方</span>
+            <div class="city-recipe-chips">
+              ${
+                view.recipes.length
+                  ? view.recipes
+                      .map((drink) => `<span class="city-recipe-chip" style="--drink:${drink.color};--accent:${drink.accent}">${icon('recipe')}<b>${drink.name}</b></span>`)
+                      .join('')
+                  : '<em>还没有。去和面包房、花店或航空俱乐部的人聊聊吧。</em>'
+              }
+            </div>
+          </div>
+          ${
+            view.plane
+              ? `<div class="city-travel-call">
+                  <span class="city-travel-icon">${icon('plane')}</span>
+                  <div><b>小桃号在跑道边等你</b><small>旅行手账已解锁 · 已完成 ${view.travelDone}/${TRAVEL_CHAPTERS.length} 章 · 小费 +${Math.round(view.travelBonus * 100)}%</small></div>
+                  <button type="button" class="btn btn-ghost btn-small" data-action="openTravel">翻手账</button>
+                </div>`
+              : `<div class="city-travel-call is-locked">${icon('lock')}<div><b>去更远的地方</b><small>第一次拜访航空俱乐部，就能拿到小桃号的钥匙。</small></div></div>`
+          }
+          <p class="city-wander-foot">${icon('leaf')} 回小店或回家，都会结束今晚的散步。</p>
+        </div>`;
+      }
+      if (story) return storyPanel(story);
+      if (activeSpot.id === 'market') return marketPanel();
+      if (activeSpot.id === 'home') {
+        return `<div class="city-home">
+          <span class="city-home-moon">${icon('moon')}</span>
+          <h3>路灯亮了</h3>
+          <p>${view.slotsLeft > 0 ? `还剩 ${view.slotsLeft} 段时光。回家就会结束今晚的散步。` : '今晚的散步就到这里，回家煮一碗热汤吧。'}</p>
+          <button type="button" class="btn btn-primary btn-big" data-action="closeCity">结束今晚，回小店 ${icon('arrow')}</button>
+        </div>`;
+      }
+      if (activeSpot.id === 'shop') {
+        return `<div class="city-shop-card">
+          <span class="city-shop-icon">${icon('peach')}</span>
+          <small>PEACH &amp; MINT</small>
+          <h3>桃桃茶屋</h3>
+          <p>门里还留着一盏小灯。回去把明天的杯子摆好，也算给今晚收个尾。</p>
+          <button type="button" class="btn btn-primary btn-big" data-action="closeCity">回到小店 ${icon('arrow')}</button>
+          <span class="city-place-hint">${icon('leaf')} 回小店会结束今晚的散步。</span>
+        </div>`;
+      }
+      if (view.usedSpots.includes(activeSpot.id)) {
+        return `<div class="city-used">
+          <span class="city-used-icon">${icon('check')}</span>
+          <h3>今晚已经来过这里</h3>
+          <p>${activeSpot.tagline} 明天傍晚再来，也许会遇见另一段故事。</p>
+          <button type="button" class="btn btn-ghost" data-action="cityBackToPanel">回地图 ${icon('arrow')}</button>
+        </div>`;
+      }
+      return visitPanel();
+    })();
+
+    this.screenRoot.innerHTML = `
+      <div class="screen overlay-screen city-screen" role="dialog" aria-modal="true" aria-label="傍晚的城市散步">
+        <div class="city-wash"></div>
+        <div class="city-layout">
+          <header class="city-head">
+            <div class="city-title">
+              <span class="city-kicker">${icon('moon')} EVENING WALK · DAY ${pad2(view.day + 1)}</span>
+              <h2>傍晚，去街上走走</h2>
+            </div>
+            <div class="city-head-right">
+              <div class="city-slot-copy">${citySlotsHtml(view.slotsLeft)}<span>${view.slotsLeft > 0 ? `还剩 ${view.slotsLeft} 段时光` : '今晚的时光用完了'}</span></div>
+              <span class="city-coins">${icon('coin')} ${view.coins}</span>
+              <button type="button" class="btn btn-ghost city-back" data-action="closeCity">回小店</button>
+            </div>
+          </header>
+          <div class="city-stage">
+            <div class="city-map">
+              <div class="city-dusk">
+                <span class="city-sun"></span>
+                <span class="city-cloud sc1"></span><span class="city-cloud sc2"></span>
+                <span class="city-star st1">✦</span><span class="city-star st2">✦</span><span class="city-star st3">✦</span>
+              </div>
+              <svg class="city-road" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M15 84 C26 68 23 56 35 52 S52 38 57 34 S73 36 78 48 S86 66 88 82" />
+                <path d="M35 52 C34 62 37 74 41 90" />
+              </svg>
+              <span class="city-tree tr1"></span><span class="city-tree tr2"></span>
+              <span class="city-tree tr3"></span><span class="city-tree tr4"></span>
+              <span class="city-lamp lp1"></span><span class="city-lamp lp2"></span><span class="city-lamp lp3"></span>
+              ${buildings}
+              <span class="city-car" style="left:${carSpot.x + 3}%;top:${carSpot.y + 1}%">
+                ${icon('car')}<i class="city-car-beam"></i>
+              </span>
+              <span class="city-map-sign">PEACH &amp; MINT · 一条回家的小路</span>
+            </div>
+            <aside class="city-panel">${panel}</aside>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const nextPanel = this.screenRoot.querySelector<HTMLElement>('.city-panel');
+    if (nextPanel) nextPanel.scrollTop = panelScroll;
+    this.setSound(this.soundEnabled);
+  }
+
+  showTravel(view: TravelView) {
+    const prevList = this.screenRoot.querySelector<HTMLElement>('.travel-chapters');
+    const listScroll = prevList?.scrollTop ?? 0;
+    const nextCard = view.chapters.find((card) => card.unlocked && !card.record);
+    const interrupted = view.interrupted;
+
+    const chapterCards = view.chapters
+      .map((card) => {
+        const chapter = card.def;
+        const recipe = DRINKS_MAP[chapter.recipeId];
+        const previous = TRAVEL_CHAPTERS.find((entry) => entry.index === chapter.index - 1);
+        const isInterrupted = interrupted?.id === chapter.id;
+        const canStart =
+          view.plane &&
+          card.unlocked &&
+          !card.record &&
+          !interrupted &&
+          view.slotsLeft >= TRAVEL_COST_SLOTS &&
+          view.coins >= TRAVEL_COST_COINS;
+        const state = card.record ? 'is-done' : card.unlocked ? 'is-open' : 'is-locked';
+        return `<article class="chapter-card ${state} theme-${chapter.id} ${isInterrupted ? 'is-resuming' : ''}">
+          <div class="chapter-postcard">
+            <span class="chapter-no">CH.${pad2(chapter.index)}</span>
+            <span class="chapter-stamp">${chapter.postcard.stamp}<i>${icon(chapter.postcard.stampIcon)}</i></span>
+            <div class="chapter-scenery" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <div class="chapter-postcard-copy"><small>${chapter.name}</small><b>${chapter.latin}</b><em>${chapter.place}</em></div>
+            ${card.record ? `<span class="chapter-stars">${travelStars(card.record.stars)}</span>` : ''}
+          </div>
+          <div class="chapter-copy">
+            <span class="chapter-place">${icon('location')} ${chapter.place}${isInterrupted ? `<span class="chapter-resume-tag">${icon('plane')} 旅程未完成</span>` : ''}</span>
+            <h3>${chapter.subtitle}</h3>
+            ${
+              recipe
+                ? `<div class="chapter-recipe">
+                    ${miniCup(recipe, 'chapter-cup')}
+                    <div><span>${card.record ? '带回的配方' : '这一站的限定配方'}</span><b>${recipe.name}</b><small>${baseRecipeLineFor(categoryOf(recipe), recipe.recipe)}</small></div>
+                    <em>¥${recipe.price}</em>
+                  </div>`
+                : ''
+            }
+            <div class="chapter-loot">
+              <span>${icon(chapter.souvenirIcon)} ${chapter.souvenir}</span>
+              <span>${icon('postcard')} ${chapter.postcard.title}</span>
+            </div>
+            ${
+              card.record
+                ? `<div class="chapter-done-meta">
+                    <span>${icon('check')} 第 ${card.record.day} 天往返 · 小费 +2%</span>
+                    <button type="button" class="btn btn-ghost btn-small" data-action="travelRevisit" data-id="${chapter.id}">重温明信片</button>
+                  </div>`
+                : card.unlocked
+                  ? isInterrupted
+                    ? `<div class="chapter-go">
+                        <button type="button" class="btn btn-primary" data-action="resumeTravelChapter">
+                          ${icon('plane')} 继续 · ${chapter.name}
+                        </button>
+                        <small>机票与航油已经付过，从这一章开头接着走。</small>
+                      </div>`
+                    : `<div class="chapter-go">
+                        <button type="button" class="btn btn-primary" data-action="startTravelChapter" data-id="${chapter.id}" ${canStart ? '' : 'disabled'}>
+                          ${icon('plane')} 启程 · ${chapter.name}
+                        </button>
+                        <small>${
+                          interrupted
+                            ? '先把未完成的旅程走完。'
+                            : !view.plane
+                              ? '还需要小桃号的钥匙。'
+                              : view.slotsLeft < TRAVEL_COST_SLOTS
+                                ? '傍晚时光不够，下次再出发吧。'
+                                : view.coins < TRAVEL_COST_COINS
+                                  ? '航油金币还不够。'
+                                  : `消耗 ${TRAVEL_COST_SLOTS} 段时光 · ¥${TRAVEL_COST_COINS} 航油`
+                        }</small>
+                      </div>`
+                  : `<div class="chapter-lock">${icon('lock')} 完成「${previous?.name ?? '上一章'}」后解锁</div>`
+            }
+          </div>
+        </article>`;
+      })
+      .join('');
+
+    const resumeBanner = interrupted
+      ? `<div class="travel-resume">
+          <span class="travel-resume-icon">${icon('plane')}<i></i></span>
+          <div class="travel-resume-copy">
+            <small>${icon('postcard')} 未完成的旅程 · TICKET KEPT</small>
+            <b>第 ${interrupted.index} 站 · ${interrupted.name}</b>
+            <p>上次的机票和航油已经付过。从这一章开头继续，不会再扣一次。</p>
+          </div>
+          <button type="button" class="btn btn-primary" data-action="resumeTravelChapter">继续旅程 ${icon('arrow')}</button>
+        </div>`
+      : '';
+
+    this.screenRoot.innerHTML = `
+      <div class="screen overlay-screen travel-screen travel-journal" role="dialog" aria-modal="true" aria-label="旅行手账">
+        <div class="journal-sky">
+          <span class="journal-moon"></span>
+          <span class="journal-cloud jc1"></span><span class="journal-cloud jc2"></span><span class="journal-cloud jc3"></span>
+          <span class="journal-plane">${icon('plane')}<i class="journal-trail"></i></span>
+          <span class="journal-star js1">✦</span><span class="journal-star js2">✦</span><span class="journal-star js3">✦</span>
+        </div>
+        <div class="travel-journal-inner">
+          <header class="travel-head">
+            <div>
+              <span class="travel-kicker">${icon('compass')} LITTLE PEACH AIR · 旅行手账</span>
+              <h2>去远方，带一杯回来</h2>
+              <p>${interrupted ? '一张没走完的机票还夹在手账里，先去把它走完吧。' : view.plane ? '小桃号加满了油，四张明信片在等一个晴天。' : '先去航空俱乐部，把旧机库门后的钥匙找出来。'}</p>
+            </div>
+            <div class="travel-head-right">
+              <div class="travel-slot-copy">${citySlotsHtml(view.slotsLeft)}<span>傍晚时光</span></div>
+              <span class="travel-coins">${icon('coin')} ${view.coins}</span>
+              <span class="travel-plane-state ${view.plane ? 'is-ready' : ''}">${icon(view.plane ? 'plane' : 'lock')} ${view.plane ? '小桃号待飞' : '尚未解锁'}</span>
+              <button type="button" class="btn btn-ghost" data-action="closeTravel">回小店</button>
+            </div>
+          </header>
+          <div class="travel-journal-body">
+            <aside class="travel-plane-card">
+              <div class="travel-plane-art">
+                <span class="plane-cloud pc1"></span><span class="plane-cloud pc2"></span>
+                <span class="plane-horizon"></span>
+                <span class="plane-trail"></span>
+                ${icon('plane')}
+              </div>
+              <span class="travel-plane-kicker">LITTLE PEACH AIR</span>
+              <h3>小桃号</h3>
+              <p>奶油色的小飞机。飞得慢，但每次落地，都会带回一点能让小店变好的东西。</p>
+              <div class="travel-costs">
+                <span>${icon('moon')} 每章 ${TRAVEL_COST_SLOTS} 段傍晚时光</span>
+                <span>${icon('coin')} 航油 ¥${TRAVEL_COST_COINS}</span>
+              </div>
+              <div class="travel-souvenir-card">
+                <span>${icon('heartWish')} 伴手礼陈列</span>
+                <b>小费永久 +${Math.round(view.bonus * 100)}%</b>
+                <small>已完成 ${view.completed} / ${TRAVEL_CHAPTERS.length} 章</small>
+                <div class="travel-shelf">
+                  ${TRAVEL_CHAPTERS.map(
+                    (chapter) => `<i class="${view.chapters.find((card) => card.def.id === chapter.id)?.record ? 'is-on' : ''}" title="${chapter.souvenir}">${icon(chapter.souvenirIcon)}</i>`,
+                  ).join('')}
+                </div>
+              </div>
+              ${nextCard ? `<p class="travel-next-hint">${icon('sparkle')} 下一站：${nextCard.def.name}</p>` : `<p class="travel-next-hint">${icon('sparkle')} 四张明信片都收齐了。</p>`}
+            </aside>
+            <section class="travel-chapters">${resumeBanner}${chapterCards}</section>
+          </div>
+          <footer class="travel-foot">
+            <span>${icon('leaf')} 旅行不推进营业日，也不打断小店的核心节奏。</span>
+            <button type="button" class="btn btn-primary" data-action="closeTravel">${icon('home')} 回到小店</button>
+          </footer>
+        </div>
+      </div>
+    `;
+
+    const nextList = this.screenRoot.querySelector<HTMLElement>('.travel-chapters');
+    if (nextList) nextList.scrollTop = listScroll;
+    this.setSound(this.soundEnabled);
+  }
+
+  showTravelSession(view: TravelSessionView) {
+    const { chapter, phase } = view;
+    const recipe = DRINKS_MAP[chapter.recipeId];
+    const progress = view.revisit ? ['序章', '明信片'] : ['序章', '选择', '小游戏', '明信片'];
+    const progressIndex = view.revisit ? (phase === 'result' ? 1 : 0) : phase === 'scene' ? 0 : phase === 'choice' ? 1 : phase === 'mini' ? 2 : 3;
+
+    const vignette = `<aside class="stage-vignette" aria-hidden="true">
+      <div class="chapter-scenery"><i></i><i></i><i></i><i></i></div>
+      <span class="chapter-no">CH.${pad2(chapter.index)}</span>
+      <span class="chapter-stamp">${chapter.postcard.stamp}<i>${icon(chapter.postcard.stampIcon)}</i></span>
+      <div class="stage-vignette-copy">
+        <small>${chapter.latin}</small>
+        <b>${chapter.postcard.title}</b>
+        <em>${chapter.place} · 第 ${chapter.index} 站</em>
+      </div>
+    </aside>`;
+
+    let stage = '';
+    if (phase === 'scene') {
+      stage = `<article class="travel-stage">
+        ${vignette}
+        <div class="stage-body">
+          <span class="stage-kicker">${icon('location')} ${chapter.place}</span>
+          <div class="travel-scene-text">
+            ${chapter.scene
+              .slice(0, view.beat + 1)
+              .map((line, i) => `<p class="${i === view.beat ? 'is-current' : ''}">${line}</p>`)
+              .join('')}
+          </div>
+          <div class="scene-actions">
+            <span>${icon('compass')} ${view.revisit ? '正在重温这一站的文字。' : chapter.scene.length - 1 - view.beat > 0 ? `还有 ${chapter.scene.length - 1 - view.beat} 段风景` : '先听听这里的声音。'}</span>
+            <button type="button" class="btn btn-primary btn-big" data-action="travelNext">
+              ${view.beat < chapter.scene.length - 1 ? '继续往前' : view.revisit ? '翻到明信片' : '走近看看'} ${icon('arrow')}
+            </button>
+          </div>
+        </div>
+      </article>`;
+    } else if (phase === 'choice') {
+      stage = `<article class="travel-stage">
+        ${vignette}
+        <div class="stage-body">
+          <span class="stage-kicker">${icon('bubble')} ${chapter.choicePrompt}</span>
+          <div class="travel-choice-list">
+            ${chapter.choices
+              .map(
+                (choice, i) => `<button type="button" class="travel-choice" data-action="travelChoose" data-index="${i}">
+                  <span>${pad2(i + 1)}</span><b>${choice.label}</b>${icon('chevron')}
+                </button>`,
+              )
+              .join('')}
+          </div>
+          <p class="stage-foot">${icon('heart')} 两个选择都不会失败，只会让这段回忆有一点不同。</p>
+        </div>
+      </article>`;
+    } else if (phase === 'mini' && view.mini) {
+      const mini = view.mini;
+      const miniMarkup =
+        mini.mode === 'timing' && chapter.timing
+          ? `<div class="travel-timing ${mini.done ? 'is-done' : ''}">
+              <div class="timing-top">
+                <span>${icon('clock')} ${chapter.timing.hint}</span>
+                <b>${mini.taps} / ${mini.tapsNeeded} ${chapter.timing.unit}</b>
+              </div>
+              <div class="timing-track">
+                <span class="timing-zone" style="left:${50 - (mini.zone * 100) / 2}%;width:${mini.zone * 100}%"></span>
+                <span class="timing-center"></span>
+                <span class="timing-pointer" data-travel-pointer></span>
+              </div>
+              <div class="timing-scale"><span>${chapter.timing.scale[0]}</span><span>${chapter.timing.scale[1]}</span><span>${chapter.timing.scale[2]}</span></div>
+              <div class="timing-pips">
+                ${Array.from(
+                  { length: mini.tapsNeeded },
+                  (_, i) => `<i class="${mini.scores[i] === undefined ? '' : mini.scores[i] >= 0.82 ? 'is-perfect' : mini.scores[i] >= 0.52 ? 'is-good' : 'is-miss'}">${icon('sparkle')}</i>`,
+                ).join('')}
+              </div>
+              ${
+                mini.done
+                  ? `<div class="timing-done">
+                      <div><span>${icon('sparkle')} ${chapter.timing.doneLine}</span><div class="mini-stars">${travelStars(mini.stars)}</div></div>
+                      <button type="button" class="btn btn-primary btn-big" data-action="travelNext">看看明信片 ${icon('arrow')}</button>
+                    </div>`
+                  : `<button type="button" class="btn btn-primary btn-big timing-tap" data-action="travelTimingTap">${icon('sparkle')} ${chapter.timing.tapLabel}</button>
+                     <p class="timing-tip">${icon('leaf')} 指针进入薄荷色区域时按下，没有失败，只有更漂亮的一接。</p>`
+              }
+            </div>`
+          : chapter.quiz
+            ? (() => {
+                const question = chapter.quiz[mini.quizIndex];
+                if (!question) return '';
+                const answered = mini.quizAnswered;
+                return `<div class="travel-quiz">
+                  <div class="quiz-head">
+                    <span>${icon('notebook')} 第 ${mini.quizIndex + 1} / ${mini.quizTotal} 张点单便签</span>
+                    <b>${mini.quizCorrect} 答对</b>
+                  </div>
+                  <blockquote>${question.prompt}</blockquote>
+                  <p class="quiz-hint">${icon('sparkle')} ${question.hint}</p>
+                  <div class="quiz-options">
+                    ${question.options
+                      .map((option, i) => {
+                        const chosen = answered === i;
+                        const showCorrect = answered !== null && option.correct;
+                        return `<button type="button" class="quiz-option ${showCorrect ? 'is-correct' : ''} ${chosen && !option.correct ? 'is-wrong' : ''}" data-action="travelQuizAnswer" data-index="${i}" ${answered !== null ? 'disabled' : ''}>
+                          <span class="quiz-mark">${showCorrect ? icon('check') : chosen && !option.correct ? icon('close') : icon('bubble')}</span>
+                          <span><b>${option.label}</b><small>${option.sub}</small></span>
+                        </button>`;
+                      })
+                      .join('')}
+                  </div>
+                  ${
+                    answered !== null
+                      ? `<div class="quiz-feedback ${question.options[answered]?.correct ? 'is-good' : 'is-bad'}">
+                          <p>${question.options[answered]?.correct ? '正是这一杯。等车的人接过杯子，肩膀终于松了下来。' : '这一杯好像不太对。别急，再看一眼便签上的三个条件。'}</p>
+                          <button type="button" class="btn btn-ghost" data-action="travelQuizNext">${mini.quizIndex + 1 >= mini.quizTotal ? '完成核对' : '下一张便签'} ${icon('arrow')}</button>
+                        </div>`
+                      : ''
+                  }
+                  ${
+                    mini.quizDone
+                      ? `<div class="quiz-done">
+                          <span>${icon('sparkle')} 全部核对完成，${mini.quizCorrect} / ${mini.quizTotal} 杯刚刚好。</span>
+                          <div class="mini-stars">${travelStars(mini.stars)}</div>
+                          <button type="button" class="btn btn-primary btn-big" data-action="travelNext">看看明信片 ${icon('arrow')}</button>
+                        </div>`
+                      : ''
+                  }
+                </div>`;
+              })()
+            : '';
+
+      stage = `<article class="travel-stage travel-stage-mini">
+        ${vignette}
+        <div class="stage-body">
+          ${
+            view.reply
+              ? `<div class="mini-reply">${icon('bubble')}<p>${view.reply}</p></div>`
+              : ''
+          }
+          <span class="stage-kicker">${icon('stars')} ${chapter.miniGame === 'timing' ? (chapter.id === 'tea_mountain' ? '一芽两叶' : chapter.id === 'star_island' ? '接住星光' : '浪花正好') : '深夜点单核对'}</span>
+          ${miniMarkup}
+          <p class="stage-foot">${icon('leaf')} 小游戏不会失败，只影响明信片上的星星和金币。</p>
+        </div>
+      </article>`;
+    } else if (phase === 'result') {
+      stage = `<div class="travel-result">
+        <article class="travel-postcard theme-${chapter.id}">
+          <div class="postcard-scenery" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <span class="postcard-stamp">${chapter.postcard.stamp}<i>${icon(chapter.postcard.stampIcon)}</i></span>
+          <div class="postcard-copy">
+            <span>POSTCARD · ${chapter.latin}</span>
+            <h3>${chapter.postcard.title}</h3>
+            <p>${chapter.postcard.caption}</p>
+            <em>${chapter.place} · 桃桃茶屋 收</em>
+          </div>
+        </article>
+        <div class="travel-loot">
+          <div class="loot-head">
+            <span>${view.revisit ? '那一年的明信片' : '这一趟带回来的东西'}</span>
+            <div class="mini-stars">${travelStars(view.stars)}</div>
+          </div>
+          ${
+            view.revisit
+              ? `<p class="loot-revisit">你重新读了一遍那天的风景。明信片背面还留着当时写的字，奖励不会重复发放。</p>`
+              : `<div class="loot-grid">
+                  <div class="loot-item is-coin">${icon('coin')}<span><small>旅行金币</small><b>+${view.earned}</b></span></div>
+                  ${
+                    recipe
+                      ? `<div class="loot-item is-recipe">${miniCup(recipe, 'loot-cup')}<span><small>限定配方</small><b>${recipe.name}</b></span></div>`
+                      : ''
+                  }
+                  <div class="loot-item">${icon(chapter.souvenirIcon)}<span><small>伴手礼</small><b>${chapter.souvenir}</b></span></div>
+                  <div class="loot-item is-bonus">${icon('heartWish')}<span><small>陈列加成</small><b>小费 +${Math.round(view.bonus * 100)}%</b></span></div>
+                </div>`
+          }
+          <button type="button" class="btn btn-primary btn-big" data-action="travelFinish">${view.revisit ? '回到旅行手账' : '收进手账，回小店'} ${icon('arrow')}</button>
+        </div>
+      </div>`;
+    }
+
+    this.screenRoot.innerHTML = `
+      <div class="screen overlay-screen travel-screen travel-session theme-${chapter.id} phase-${phase}" role="dialog" aria-modal="true" aria-label="${chapter.name}">
+        <div class="travel-session-sky">
+          <span class="session-sun"></span>
+          <span class="session-cloud sc1"></span><span class="session-cloud sc2"></span>
+          <span class="session-star ss1">✦</span><span class="session-star ss2">✦</span><span class="session-star ss3">✦</span>
+          <div class="session-scenery" aria-hidden="true"><i class="ridge r1"></i><i class="ridge r2"></i><i class="ridge r3"></i></div>
+        </div>
+        <div class="travel-session-inner">
+          <header class="travel-session-head">
+            <div>
+              <span class="travel-kicker">${icon('plane')} LITTLE PEACH AIR · CH.${pad2(chapter.index)} · ${chapter.latin}</span>
+              <h2>${chapter.name}</h2>
+              <p>${chapter.place} · ${chapter.subtitle}</p>
+            </div>
+            <div class="travel-progress">
+              ${progress.map((label, i) => `<span class="${i === progressIndex ? 'is-now' : ''} ${i < progressIndex ? 'is-done' : ''}"><i></i>${label}</span>`).join('')}
+            </div>
+          </header>
+          ${stage}
+          <p class="travel-session-foot">${icon('leaf')} ${phase === 'result' ? '明信片会收进旅行手账，配方与伴手礼永久留在小店。' : '不用赶时间，小桃号会等这一章慢慢走完。'}</p>
+        </div>
+      </div>
+    `;
+
+    this.travelPointer = this.screenRoot.querySelector<HTMLElement>('[data-travel-pointer]');
+    this.setSound(this.soundEnabled);
+  }
+
+  updateTravelPointer(position: number) {
+    if (!this.travelPointer) return;
+    this.travelPointer.style.left = `${Math.max(0, Math.min(1, position)) * 100}%`;
   }
 
   showPause(view: PauseView) {
@@ -1911,6 +2834,17 @@ export class Screens {
             <div><span>目标</span><b>¥${view.goal}</b></div>
             <div><span>耐心</span><b class="hearts-inline">${heartsHtml(view.hearts)}</b></div>
           </div>
+          ${
+            view.supplies.length || view.travelBonus > 0
+              ? `<div class="pause-supplies">
+                  <span>${icon('sparkle')} 今日特供</span>
+                  <div>
+                    ${supplyChips(view.supplies, '今天没有额外补给')}
+                    ${view.travelBonus > 0 ? `<span class="supply-chip is-souvenir" style="--supply:#ffd479">${icon('heartWish')}<b>伴手礼</b><small>小费 +${Math.round(view.travelBonus * 100)}%</small></span>` : ''}
+                  </div>
+                </div>`
+              : ''
+          }
           <button type="button" class="btn btn-primary btn-big pause-resume" data-action="resume">${icon('bell')} 继续营业</button>
           <div class="pause-grid">
             <button type="button" class="pause-option" data-action="openHelp">${icon('book')}<span><b>玩法说明</b><small>配方、连击和小费</small></span></button>
@@ -1993,6 +2927,7 @@ export class Screens {
     danger?: boolean;
   }): Promise<boolean> {
     return new Promise((resolve) => {
+      const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const layer = document.createElement('div');
       layer.className = 'confirm-layer';
       layer.innerHTML = `
@@ -2008,20 +2943,48 @@ export class Screens {
         </div>
       `;
       document.body.appendChild(layer);
+      const noButton = layer.querySelector<HTMLButtonElement>('[data-confirm-no]');
+      const yesButton = layer.querySelector<HTMLButtonElement>('[data-confirm-yes]');
       const finish = (value: boolean) => {
         layer.classList.add('is-out');
-        window.setTimeout(() => layer.remove(), 180);
+        window.setTimeout(() => {
+          layer.remove();
+          if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+        }, 180);
         document.removeEventListener('keydown', onKey);
         resolve(value);
       };
       const onKey = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') finish(false);
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(false);
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const buttons = [noButton, yesButton].filter((button): button is HTMLButtonElement => !!button);
+        if (buttons.length === 0) return;
+        const first = buttons[0];
+        const last = buttons[buttons.length - 1];
+        const active = document.activeElement;
+        if (!layer.contains(active)) {
+          event.preventDefault();
+          first.focus();
+        } else if (event.shiftKey && active === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && active === last) {
+          event.preventDefault();
+          first.focus();
+        }
       };
-      layer.querySelector<HTMLElement>('[data-confirm-yes]')?.addEventListener('click', () => finish(true));
-      layer.querySelector<HTMLElement>('[data-confirm-no]')?.addEventListener('click', () => finish(false));
+      yesButton?.addEventListener('click', () => finish(true));
+      noButton?.addEventListener('click', () => finish(false));
       layer.querySelector<HTMLElement>('.confirm-scrim')?.addEventListener('click', () => finish(false));
       document.addEventListener('keydown', onKey);
-      requestAnimationFrame(() => layer.classList.add('is-in'));
+      requestAnimationFrame(() => {
+        layer.classList.add('is-in');
+        (options.danger ? noButton : yesButton)?.focus({ preventScroll: true });
+      });
     });
   }
 
@@ -2053,21 +3016,69 @@ export class Screens {
 
   // ───────────────────────────────────────── events
 
+  private onClickRoot = (event: Event) => this.handleAction(event as MouseEvent);
+
+  private onPointerDownRoot = (event: PointerEvent) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
+    if (target?.dataset.action !== 'shakeTap') return;
+    event.preventDefault();
+    this.actions.tapShake();
+  };
+
+  private onFocusKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== 'Tab') return;
+    if (document.querySelector('.confirm-layer')) return;
+    const dialog = this.screenRoot.querySelector<HTMLElement>('[role="dialog"]');
+    if (!dialog) return;
+    const focusables = [...dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )].filter((el) => el.getClientRects().length > 0);
+    if (focusables.length === 0) {
+      event.preventDefault();
+      dialog.focus({ preventScroll: true });
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (!dialog.contains(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (active === dialog) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  private queueDialogFocus() {
+    if (this.focusRaf) return;
+    this.focusRaf = requestAnimationFrame(() => {
+      this.focusRaf = 0;
+      if (document.querySelector('.confirm-layer')) return;
+      const dialog = this.screenRoot.querySelector<HTMLElement>('[role="dialog"]');
+      if (!dialog) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && this.screenRoot.contains(active)) return;
+      if (!dialog.hasAttribute('tabindex')) dialog.tabIndex = -1;
+      dialog.focus({ preventScroll: true });
+    });
+  }
+
   private bindEvents() {
-    const handle = (event: Event) => this.handleAction(event as MouseEvent);
-    this.screenRoot.addEventListener('click', handle);
-    this.hudRoot.addEventListener('click', handle);
-    this.worldRoot.addEventListener('click', handle);
-    this.screenRoot.addEventListener(
-      'pointerdown',
-      (event) => {
-        const target = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
-        if (target?.dataset.action !== 'shakeTap') return;
-        event.preventDefault();
-        this.actions.tapShake();
-      },
-      { passive: false },
-    );
+    this.screenRoot.addEventListener('click', this.onClickRoot);
+    this.hudRoot.addEventListener('click', this.onClickRoot);
+    this.worldRoot.addEventListener('click', this.onClickRoot);
+    this.screenRoot.addEventListener('pointerdown', this.onPointerDownRoot, { passive: false });
   }
 
   private handleAction(event: MouseEvent) {
@@ -2174,6 +3185,74 @@ export class Screens {
       case 'toggleSign':
         this.actions.toggleSign();
         break;
+      case 'openCity':
+        this.actions.openCity();
+        break;
+      case 'closeCity':
+        this.actions.closeCity();
+        break;
+      case 'visitCitySpot': {
+        const id = target.dataset.id as CitySpotId | undefined;
+        if (id) this.actions.visitCitySpot(id);
+        break;
+      }
+      case 'cityStoryChoice': {
+        const index = Number(target.dataset.index);
+        if (Number.isFinite(index)) this.actions.cityStoryChoice(index);
+        break;
+      }
+      case 'cityBackToPanel':
+        this.actions.cityBackToPanel();
+        break;
+      case 'buySupply': {
+        const id = target.dataset.id as SupplyId | undefined;
+        if (id) this.actions.buySupply(id);
+        break;
+      }
+      case 'openTravel':
+        this.actions.openTravel();
+        break;
+      case 'closeTravel':
+        this.actions.closeTravel();
+        break;
+      case 'startTravelChapter': {
+        const id = target.dataset.id;
+        if (id) this.actions.startTravelChapter(id);
+        break;
+      }
+      case 'resumeTravelChapter':
+        this.actions.resumeTravelChapter();
+        break;
+      case 'travelNext':
+        this.actions.travelNext();
+        break;
+      case 'travelChoose': {
+        const index = Number(target.dataset.index);
+        if (Number.isFinite(index)) this.actions.travelChoose(index);
+        break;
+      }
+      case 'travelTimingTap':
+        this.actions.travelTimingTap();
+        break;
+      case 'travelQuizAnswer': {
+        const index = Number(target.dataset.index);
+        if (Number.isFinite(index)) this.actions.travelQuizAnswer(index);
+        break;
+      }
+      case 'travelQuizNext':
+        this.actions.travelQuizNext();
+        break;
+      case 'travelFinish':
+        this.actions.travelFinish();
+        break;
+      case 'travelBackToJournal':
+        this.actions.travelBackToJournal();
+        break;
+      case 'travelRevisit': {
+        const id = target.dataset.id;
+        if (id) this.actions.travelRevisit(id);
+        break;
+      }
       case 'toggleRecipes':
         this.toggleRecipeDrawer();
         break;

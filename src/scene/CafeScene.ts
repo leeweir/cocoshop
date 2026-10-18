@@ -9,6 +9,7 @@ import { DRINKS_MAP, DRINKS } from '../game/data';
 import { Chibi } from './Chibi';
 import {
   archShape,
+  contactShadowTexture,
   easeOutBack,
   heartTexture,
   makeCanvasTexture,
@@ -30,6 +31,8 @@ interface SceneCustomer {
   seat: number;
   state: CustomerVisualState;
   targetX: number;
+  targetZ: number;
+  faceDir: number;
   leaveTimer: number;
   mood: 'neutral' | 'worried' | 'sad';
   lastScreen: { x: number; y: number; visible: boolean };
@@ -71,9 +74,19 @@ export interface SceneOptions {
 }
 
 const SEATS = [
-  { x: -2.45, z: -0.98 },
-  { x: 0, z: -0.98 },
-  { x: 2.45, z: -0.98 },
+  { x: -2.35, z: 2.6, face: -1 },
+  { x: 0, z: 2.6, face: -1 },
+  { x: 2.35, z: 2.6, face: -1 },
+];
+
+// foreground chair row where customers actually sit
+const CHAIR_Z = 1.95;
+
+// decorative stools behind the counter (not used for customer seating)
+const BACK_STOOLS = [
+  { x: -2.35, z: -4.02 },
+  { x: 0, z: -4.02 },
+  { x: 2.35, z: -4.02 },
 ];
 
 const SKY_W = 900;
@@ -89,6 +102,7 @@ export class CafeScene {
   private customers = new Map<string, SceneCustomer>();
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2(-10, -10);
+  private rayPointer = new THREE.Vector2();
   private hoveredId: string | null = null;
   private interactive = false;
   private options: SceneOptions;
@@ -124,6 +138,7 @@ export class CafeScene {
   private heartTex = heartTexture('#ff91b2');
   private flights: FlightCup[] = [];
   private softShadowTexture = softShadowTexture();
+  private contactShadowTex = contactShadowTexture();
   private cushionMeshes: THREE.Mesh[] = [];
   private cakeMeshes: THREE.Object3D[] = [];
   private trophyGroup = new THREE.Group();
@@ -137,13 +152,13 @@ export class CafeScene {
   constructor(canvas: HTMLCanvasElement, theme: DayTheme, options: SceneOptions = {}) {
     this.theme = theme;
     this.options = options;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(1.8, window.devicePixelRatio || 1));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.92;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.06;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.scene.background = new THREE.Color('#f7dfe6');
 
     this.camera = new THREE.PerspectiveCamera(44, window.innerWidth / window.innerHeight, 0.1, 60);
@@ -161,9 +176,14 @@ export class CafeScene {
     this.menuTexture = makeCanvasTexture(1024, 640, (ctx, w, h) => this.drawMenu(ctx, w, h, []), { srgb: true });
     this.signTexture = makeCanvasTexture(1024, 256, (ctx, w, h) => this.drawSign(ctx, w, h));
 
-    this.composer = new EffectComposer(this.renderer);
+    // Antialiasing happens in the composer's multisampled offscreen target.
+    const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    this.composer = new EffectComposer(this.renderer, renderTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.26, 0.42, 0.9);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.16, 0.5, 0.92);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
@@ -237,7 +257,9 @@ export class CafeScene {
   spawnCustomer(orderId: string, customer: CustomerDef, seat: number, vip = false) {
     const seatData = SEATS[seat];
     const chibi = new Chibi(customer, vip);
-    chibi.root.position.set(seatData.x + 5.4, 0, seatData.z);
+    const startX = seatData.x + 5.4;
+    chibi.root.position.set(startX, 0, CHAIR_Z);
+    chibi.root.rotation.y = 0;
     chibi.setWalking(true);
     this.scene.add(chibi.root);
     const shadow = new THREE.Mesh(
@@ -245,7 +267,7 @@ export class CafeScene {
       new THREE.MeshBasicMaterial({ map: this.softShadowTexture, transparent: true, depthWrite: false, opacity: 0.82 }),
     );
     shadow.rotation.x = -Math.PI / 2;
-    shadow.position.set(seatData.x + 5.4, 0.008, seatData.z + 0.15);
+    shadow.position.set(startX, 0.008, CHAIR_Z + 0.15);
     this.scene.add(shadow);
     this.customers.set(orderId, {
       orderId,
@@ -253,6 +275,8 @@ export class CafeScene {
       seat,
       state: 'walking',
       targetX: seatData.x,
+      targetZ: CHAIR_Z,
+      faceDir: Math.PI,
       leaveTimer: 0,
       mood: 'neutral',
       lastScreen: { x: -999, y: -999, visible: false },
@@ -288,7 +312,7 @@ export class CafeScene {
       if (o instanceof THREE.Mesh) o.castShadow = false;
     });
     this.scene.add(cup.group);
-    const end = new THREE.Vector3(SEATS[c.seat].x, 1.23, SEATS[c.seat].z + 0.52);
+    const end = new THREE.Vector3(SEATS[c.seat].x, 0.95, 2.35);
     this.flights.push({
       group: cup.group,
       start: cup.group.position.clone(),
@@ -299,20 +323,24 @@ export class CafeScene {
       orderId,
     });
     // tinted sparkle trail will follow in update
-    if (drink) this.spawnMiniHearts(SEATS[c.seat].x, 1.7, SEATS[c.seat].z, 4, 0.55);
+    if (drink) this.spawnMiniHearts(SEATS[c.seat].x, 1.35, 2.35, 4, 0.55);
   }
 
   sendCustomerAway(orderId: string, angry: boolean) {
     const c = this.customers.get(orderId);
     if (!c) return;
+    const seatData = SEATS[c.seat];
     if (angry) {
       c.state = 'angry';
       c.chibi.sulk();
       c.leaveTimer = 0;
     } else {
       c.state = 'leaving';
-      c.chibi.setWalking(true);
       c.targetX = 8.5;
+      c.targetZ = CHAIR_Z;
+      c.faceDir = 0;
+      c.chibi.setSitting(false);
+      c.chibi.setWalking(true);
       c.chibi.setMood('neutral');
     }
   }
@@ -402,15 +430,23 @@ export class CafeScene {
   }
 
   dispose() {
+    if (this.disposed) return;
     this.disposed = true;
     this.resizeObserver?.disconnect();
+    window.removeEventListener('resize', this.resize);
+    const dom = this.renderer.domElement;
+    dom.removeEventListener('pointermove', this.onPointerMove);
+    dom.removeEventListener('pointerleave', this.onPointerLeave);
+    dom.removeEventListener('click', this.onClick);
     for (const c of this.customers.values()) {
       c.chibi.dispose();
       c.shadow.geometry.dispose();
       (c.shadow.material as THREE.Material).dispose();
     }
+    this.customers.clear();
     this.composer.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 
   // ───────────────────────────── events & camera
@@ -435,28 +471,31 @@ export class CafeScene {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
     this.composer.setSize(w, h);
-    this.bloom.setSize(w, h);
   };
+
+  private customerAt(clientX: number, clientY: number): string | null {
+    this.rayPointer.set((clientX / window.innerWidth) * 2 - 1, -(clientY / window.innerHeight) * 2 + 1);
+    this.raycaster.setFromCamera(this.rayPointer, this.camera);
+    const roots = [...this.customers.values()]
+      .filter((c) => c.state === 'waiting')
+      .map((c) => c.chibi.root);
+    const hits = this.raycaster.intersectObjects(roots, true);
+    if (!hits.length) return null;
+    let obj: THREE.Object3D | null = hits[0].object;
+    while (obj && !obj.userData.customer) obj = obj.parent;
+    if (obj?.userData.customer instanceof Chibi) {
+      const found = [...this.customers.values()].find((c) => c.chibi === obj!.userData.customer);
+      return found?.orderId ?? null;
+    }
+    return null;
+  }
 
   private onPointerMove = (event: PointerEvent) => {
     this.pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
     this.pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
     this.mouseParallax.set(this.pointer.x, this.pointer.y);
     if (!this.interactive) return;
-    this.raycaster.setFromCamera(this.pointer, this.camera);
-    const roots = [...this.customers.values()]
-      .filter((c) => c.state === 'waiting')
-      .map((c) => c.chibi.root);
-    const hits = this.raycaster.intersectObjects(roots, true);
-    let id: string | null = null;
-    if (hits.length) {
-      let obj: THREE.Object3D | null = hits[0].object;
-      while (obj && !obj.userData.customer) obj = obj.parent;
-      if (obj?.userData.customer instanceof Chibi) {
-        const found = [...this.customers.values()].find((c) => c.chibi === obj!.userData.customer);
-        id = found?.orderId ?? null;
-      }
-    }
+    const id = this.customerAt(event.clientX, event.clientY);
     this.setHovered(id);
     this.renderer.domElement.style.cursor = id ? 'pointer' : 'default';
   };
@@ -466,9 +505,10 @@ export class CafeScene {
     this.mouseParallax.set(0, 0);
   };
 
-  private onClick = () => {
+  private onClick = (event: MouseEvent) => {
     if (!this.interactive) return;
-    if (this.hoveredId) this.options.onCustomerClick?.(this.hoveredId);
+    const id = this.customerAt(event.clientX, event.clientY) ?? this.hoveredId;
+    if (id) this.options.onCustomerClick?.(id);
   };
 
   private setHovered(id: string | null) {
@@ -501,23 +541,33 @@ export class CafeScene {
       const seatData = SEATS[c.seat];
       if (c.state === 'walking') {
         const dx = c.targetX - chibi.root.position.x;
-        const step = Math.sign(dx) * Math.min(Math.abs(dx), dt * 2.2);
-        chibi.root.position.x += step;
-        chibi.root.position.z = seatData.z;
+        const dz = c.targetZ - chibi.root.position.z;
+        const xStep = Math.sign(dx) * Math.min(Math.abs(dx), dt * 2.2);
+        const zStep = Math.sign(dz) * Math.min(Math.abs(dz), dt * 2.2);
+        chibi.root.position.x += xStep;
+        chibi.root.position.z += zStep;
         c.shadow.position.x = chibi.root.position.x;
-        if (Math.abs(dx) < 0.06) {
+        c.shadow.position.z = chibi.root.position.z + 0.15;
+        // turn toward the seat as we approach
+        const rotDiff = c.faceDir - chibi.root.rotation.y;
+        chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 4.5);
+        if (Math.abs(dx) < 0.06 && Math.abs(dz) < 0.06) {
           chibi.root.position.x = c.targetX;
+          chibi.root.position.z = c.targetZ;
+          chibi.root.rotation.y = c.faceDir;
           c.state = 'waiting';
           chibi.setWalking(false);
+          chibi.setSitting(true);
           this.options.onCustomerArrive?.(id);
         }
-        // face walking direction subtly
-        chibi.root.rotation.y = 0;
       } else if (c.state === 'served') {
         c.leaveTimer += dt;
         if (c.leaveTimer > 1.9) {
           c.state = 'leaving';
           c.targetX = 8.5;
+          c.targetZ = CHAIR_Z;
+          c.faceDir = 0;
+          chibi.setSitting(false);
           chibi.setWalking(true);
         }
       } else if (c.state === 'angry') {
@@ -525,22 +575,30 @@ export class CafeScene {
         if (c.leaveTimer > 1.15) {
           c.state = 'leaving';
           c.targetX = 8.5;
+          c.targetZ = CHAIR_Z;
+          c.faceDir = 0;
+          chibi.setSitting(false);
           chibi.setWalking(true);
         }
       } else if (c.state === 'leaving') {
-        chibi.root.position.x += dt * 2.4;
+        const dx = c.targetX - chibi.root.position.x;
+        const dz = c.targetZ - chibi.root.position.z;
+        chibi.root.position.x += Math.sign(dx) * Math.min(Math.abs(dx), dt * 2.4);
+        chibi.root.position.z += Math.sign(dz) * Math.min(Math.abs(dz), dt * 2.4);
+        const rotDiff = c.faceDir - chibi.root.rotation.y;
+        chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 4.5);
         c.shadow.position.x = chibi.root.position.x;
+        c.shadow.position.z = chibi.root.position.z + 0.15;
         if (chibi.root.position.x > width * 0.02 + 7.8) {
           this.removeCustomer(id);
           continue;
         }
       }
 
-      // soft hover lift
+      // keep seated guests planted at their chairs
       if (c.state === 'waiting') {
         c.shadow.position.x = chibi.root.position.x;
-        // patience tinting ring is in DOM
-        chibi.root.position.z = seatData.z;
+        c.shadow.position.z = chibi.root.position.z + 0.15;
       }
 
       // heart anchors
@@ -625,7 +683,7 @@ export class CafeScene {
           if (f.orderId) {
             const c = this.customers.get(f.orderId);
             if (c) {
-              this.spawnMiniHearts(SEATS[c.seat].x, 1.6, SEATS[c.seat].z, 8, 1);
+              this.spawnMiniHearts(SEATS[c.seat].x, 1.6, CHAIR_Z, 8, 1);
             }
           }
           disposeCup(f.group as unknown as THREE.Group);
@@ -725,7 +783,8 @@ export class CafeScene {
       [0, 3.05, 0.9],
       [3, 3.15, 0.8],
     ];
-    for (const [x, y, z] of bulbSpots) {
+    const shadeColors = ['#ffb0c8', '#ffdf9e', '#9fe5cc'];
+    bulbSpots.forEach(([x, y, z], index) => {
       const light = new THREE.PointLight(0xffd8a6, 5.5, 6.5, 2);
       light.position.set(x, y, z);
       this.scene.add(light);
@@ -738,12 +797,22 @@ export class CafeScene {
       cord.position.set(x, (5.9 + y) / 2 + 0.15, z);
       this.scene.add(cord);
       const shade = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.11, 0.36, 0.32, 32, 1, true),
-        standard(x === 0 ? '#ffb4c9' : '#b7e8d7', { roughness: 0.55, side: THREE.DoubleSide }),
+        new THREE.CylinderGeometry(0.13, 0.38, 0.34, 32, 1, true),
+        standard(shadeColors[index], { roughness: 0.5, side: THREE.DoubleSide }),
       );
       shade.position.set(x, y + 0.22, z);
       shade.castShadow = true;
       this.scene.add(shade);
+      const shadeRim = new THREE.Mesh(new THREE.TorusGeometry(0.375, 0.014, 6, 36), standard('#fff2d8', { roughness: 0.35, metalness: 0.1 }));
+      shadeRim.rotation.x = Math.PI / 2;
+      shadeRim.position.set(x, y + 0.05, z);
+      this.scene.add(shadeRim);
+      const charm = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), new THREE.MeshBasicMaterial({ color: '#ffd98a', toneMapped: false }));
+      charm.position.set(x, y - 0.14, z);
+      this.scene.add(charm);
+      const charmString = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.14, 4), standard('#d8b487', { roughness: 0.5 }));
+      charmString.position.set(x, y - 0.07, z);
+      this.scene.add(charmString);
       const bulb = new THREE.Mesh(
         new THREE.SphereGeometry(0.1, 20, 16),
         new THREE.MeshBasicMaterial({ color: '#ffe3b0', toneMapped: false }),
@@ -762,7 +831,7 @@ export class CafeScene {
       halo.position.copy(bulb.position);
       halo.scale.setScalar(1.3);
       this.scene.add(halo);
-    }
+    });
   }
 
   private updateLights(dt: number) {
@@ -771,15 +840,15 @@ export class CafeScene {
     const dusk = theme.id === 'dusk';
     const target = new THREE.Color(theme.ambient);
     this.ambientLight.color.lerp(target, dt * 1.6);
-    this.ambientLight.intensity = THREE.MathUtils.damp(this.ambientLight.intensity, night ? 0.6 : dusk ? 0.92 : 1.05, 2.2, dt);
+    this.ambientLight.intensity = THREE.MathUtils.damp(this.ambientLight.intensity, night ? 0.5 : dusk ? 0.62 : 0.68, 2.2, dt);
     const sunColor = new THREE.Color(theme.sun);
     this.sunLight.color.lerp(sunColor, dt * 1.6);
-    this.sunLight.intensity = THREE.MathUtils.damp(this.sunLight.intensity, night ? 0.45 : dusk ? 1.55 : 1.8, 2, dt);
-    const fillColor = new THREE.Color(theme.accent).lerp(new THREE.Color('#fff4e4'), 0.45);
+    this.sunLight.intensity = THREE.MathUtils.damp(this.sunLight.intensity, night ? 0.7 : dusk ? 2.1 : 2.35, 2, dt);
+    const fillColor = new THREE.Color(theme.accent).lerp(new THREE.Color('#fff4e4'), 0.3);
     this.fillLight.color.lerp(fillColor, dt * 1.5);
-    this.fillLight.intensity = THREE.MathUtils.damp(this.fillLight.intensity, night ? 0.9 : dusk ? 0.6 : 0.38, 2, dt);
+    this.fillLight.intensity = THREE.MathUtils.damp(this.fillLight.intensity, night ? 1.3 : dusk ? 0.9 : 0.62, 2, dt);
     for (const light of this.bulbLights) {
-      light.intensity = THREE.MathUtils.damp(light.intensity, night ? 5.2 : dusk ? 2.8 : 1.5, 2, dt);
+      light.intensity = THREE.MathUtils.damp(light.intensity, night ? 6.4 : dusk ? 3.6 : 2.2, 2, dt);
     }
     if (this.signGlow) {
       const base = 0.34 + this.upgradeLevels.sign * 0.14;
@@ -814,6 +883,25 @@ export class CafeScene {
     this.buildBackDecor();
     this.buildPlants();
     this.buildStringLights();
+    this.buildBunting();
+  }
+
+  /** Soft dark decal placed on the ground beneath an object to fake contact shadow / AO. */
+  private addContactShadow(x: number, z: number, width: number, depth: number, opacity = 0.28, y = 0.012) {
+    const shadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshBasicMaterial({
+        map: this.contactShadowTex,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.set(x, y, z);
+    this.scene.add(shadow);
+    return shadow;
   }
 
   private buildFloor() {
@@ -821,28 +909,47 @@ export class CafeScene {
       1024,
       1024,
       (ctx, w, h) => {
-        ctx.fillStyle = '#f7eae3';
-        ctx.fillRect(0, 0, w, h);
         const rand = mulberry(42311);
-        const colors = ['rgba(255,170,196,0.35)', 'rgba(173,224,203,0.4)', 'rgba(255,212,166,0.4)', 'rgba(205,183,222,0.26)', 'rgba(255,255,255,0.55)'];
-        for (let i = 0; i < 320; i++) {
-          ctx.fillStyle = colors[Math.floor(rand() * colors.length)];
-          const x = rand() * w;
-          const y = rand() * h;
-          const r = rand() * (rand() > 0.9 ? 11 : 4) + 1;
-          ctx.beginPath();
-          ctx.ellipse(x, y, r, r * (0.5 + rand() * 0.6), rand() * Math.PI, 0, Math.PI * 2);
-          ctx.fill();
+        const tiles = 6;
+        const size = w / tiles;
+        const palette = ['#fff3e7', '#ffe1e9', '#e6f8ef', '#fff0da', '#f6e6f5', '#e2f3f6'];
+        for (let row = 0; row < tiles; row++) {
+          for (let col = 0; col < tiles; col++) {
+            ctx.fillStyle = palette[(row + col * 2 + (row % 2)) % palette.length];
+            ctx.fillRect(col * size, row * size, size, size);
+            // terrazzo chips
+            const chips = ['rgba(255,154,185,0.5)', 'rgba(126,209,178,0.5)', 'rgba(255,206,120,0.55)', 'rgba(174,150,222,0.42)', 'rgba(255,255,255,0.75)'];
+            for (let i = 0; i < 22; i++) {
+              ctx.fillStyle = chips[Math.floor(rand() * chips.length)];
+              const x = col * size + 8 + rand() * (size - 16);
+              const y = row * size + 8 + rand() * (size - 16);
+              const r = 1.5 + rand() * 4.5;
+              ctx.beginPath();
+              ctx.ellipse(x, y, r, r * (0.45 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
         }
-        ctx.globalAlpha = 0.23;
-        ctx.strokeStyle = '#e8cbd0';
-        ctx.lineWidth = 2;
-        for (let i = 0; i < 8; i++) {
+        ctx.strokeStyle = 'rgba(225, 178, 185, 0.55)';
+        ctx.lineWidth = 3;
+        for (let i = 0; i <= tiles; i++) {
           ctx.beginPath();
-          ctx.arc(rand() * w, rand() * h, 60 + rand() * 160, 0, Math.PI * 2);
+          ctx.moveTo(i * size, 0);
+          ctx.lineTo(i * size, h);
+          ctx.moveTo(0, i * size);
+          ctx.lineTo(w, i * size);
           ctx.stroke();
         }
-        ctx.globalAlpha = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.2;
+        for (let i = 0; i <= tiles; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * size + 2.5, 0);
+          ctx.lineTo(i * size + 2.5, h);
+          ctx.moveTo(0, i * size + 2.5);
+          ctx.lineTo(w, i * size + 2.5);
+          ctx.stroke();
+        }
       },
       { repeat: [2, 2] },
     );
@@ -858,62 +965,90 @@ export class CafeScene {
     // pink rug behind the counter
     const rugTex = makeCanvasTexture(1024, 1024, (ctx, w, h) => {
       ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = '#fff3e7';
+      ctx.fillStyle = '#fff6ea';
       ctx.beginPath();
       ctx.arc(w / 2, h / 2, w * 0.49, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#ffd3df';
+      ctx.fillStyle = '#ffc6d8';
       ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.46, 0, Math.PI * 2);
+      ctx.arc(w / 2, h / 2, w * 0.465, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#fff1e7';
+      ctx.fillStyle = '#ffe5ec';
       ctx.beginPath();
       ctx.arc(w / 2, h / 2, w * 0.43, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = '#fff7ec';
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, w * 0.34, 0, Math.PI * 2);
+      ctx.fill();
       const rand = mulberry(901);
-      for (let i = 0; i < 18; i++) {
-        const a = (i / 18) * Math.PI * 2;
-        const r = w * 0.405;
-        ctx.fillStyle = '#b8e6d5';
+      const dotColors = ['#8fdcc0', '#ffd27d', '#c7b0e8', '#ff9fbc'];
+      for (let i = 0; i < 24; i++) {
+        const a = (i / 24) * Math.PI * 2;
+        const r = w * 0.397;
+        ctx.fillStyle = dotColors[i % dotColors.length];
         ctx.beginPath();
-        ctx.arc(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * r, 9, 0, Math.PI * 2);
+        ctx.arc(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * r, 10, 0, Math.PI * 2);
         ctx.fill();
       }
+      // soft scallop border
+      ctx.strokeStyle = '#ff9fbc';
+      ctx.lineWidth = 10;
+      for (let i = 0; i < 28; i++) {
+        const a0 = (i / 28) * Math.PI * 2;
+        const a1 = ((i + 1) / 28) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(w / 2, h / 2, w * 0.448, a0, a1);
+        ctx.stroke();
+      }
       ctx.strokeStyle = '#f2afc4';
-      ctx.lineWidth = 7;
-      ctx.setLineDash([4, 14]);
+      ctx.lineWidth = 5;
+      ctx.setLineDash([5, 15]);
       ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.36, 0, Math.PI * 2);
+      ctx.arc(w / 2, h / 2, w * 0.3, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
-      for (let i = 0; i < 24; i++) {
+      for (let i = 0; i < 26; i++) {
         const a = rand() * Math.PI * 2;
-        const r = rand() * w * 0.3;
-        ctx.fillStyle = rand() > 0.5 ? 'rgba(255,167,193,0.5)' : 'rgba(155,219,198,0.5)';
+        const r = rand() * w * 0.26;
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(255,143,175,0.5)' : 'rgba(128,209,179,0.5)';
         ctx.beginPath();
         ctx.arc(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * r, 3 + rand() * 4, 0, Math.PI * 2);
         ctx.fill();
       }
     });
     const rug = new THREE.Mesh(
-      new THREE.CircleGeometry(3.7, 64),
+      new THREE.CircleGeometry(3.85, 64),
       new THREE.MeshStandardMaterial({ map: rugTex, transparent: true, roughness: 1 }),
     );
     rug.rotation.x = -Math.PI / 2;
-    rug.position.set(0, 0.012, -1.3);
+    rug.position.set(0, 0.012, -3.15);
     rug.receiveShadow = true;
     this.scene.add(rug);
   }
 
   private buildWalls() {
     const wallMat = standard('#fff1e8', { roughness: 0.95 });
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(20, 6.2, 0.4), wallMat);
-    wall.position.set(0, 3.1, -5.45);
-    wall.receiveShadow = true;
-    this.scene.add(wall);
+    // segmented wall so the two arched windows are real openings onto the sky
+    const sections: [number, number, number, number][] = [
+      // [centerX, centerY, width, height]
+      [-7.7875, 3.1, 4.425, 6.2],
+      [7.7875, 3.1, 4.425, 6.2],
+      [0, 3.1, 5.05, 6.2],
+      [-4.05, 5.375, 3.05, 1.65],
+      [4.05, 5.375, 3.05, 1.65],
+      [-4.05, 0.675, 3.05, 1.35],
+      [4.05, 0.675, 3.05, 1.35],
+    ];
+    for (const [x, y, w, h] of sections) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.4), wallMat);
+      panel.position.set(x, y, -5.45);
+      panel.receiveShadow = true;
+      this.scene.add(panel);
+    }
 
     // wainscot
-    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#cdeee3', { roughness: 0.9 }));
+    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#a6e0ca', { roughness: 0.9 }));
     wainscot.position.set(0, 0.55, -5.22);
     wainscot.receiveShadow = true;
     this.scene.add(wainscot);
@@ -924,7 +1059,7 @@ export class CafeScene {
 
     // vertical fluted panel lines
     for (let i = -8; i <= 8; i += 2) {
-      const line = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.02, 0.02), standard('#b1d8cc', { roughness: 0.9 }));
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.02, 0.02), standard('#86cbb4', { roughness: 0.9 }));
       line.position.set(i, 0.55, -5.13);
       this.scene.add(line);
     }
@@ -951,8 +1086,8 @@ export class CafeScene {
     this.scene.add(upperTrim);
 
     // tall shelf towers at the edges
-    this.buildShelfTower(-6.3);
-    this.buildShelfTower(6.3);
+    this.buildShelfTower(-6.35);
+    this.buildShelfTower(6.35);
   }
 
   private buildShelfTower(x: number) {
@@ -961,6 +1096,7 @@ export class CafeScene {
     cabinet.castShadow = true;
     cabinet.receiveShadow = true;
     this.scene.add(cabinet);
+    this.addContactShadow(x, -5.0, 1.6, 0.65, 0.18);
     const panel = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.5, 0.04), standard('#f8d4dc', { roughness: 0.9 }));
     panel.position.set(x, 1.7, -4.7);
     this.scene.add(panel);
@@ -1068,7 +1204,7 @@ export class CafeScene {
         fold.scale.z = 0.55;
         curtain.add(fold);
       }
-      curtain.position.set(x + s * (w / 2 + 0.04), y + 0.02, -4.86);
+      curtain.position.set(x + s * (w / 2 - 0.2), y + 0.02, -4.86);
       curtain.rotation.z = s * 0.02;
       curtain.traverse((o) => {
         if (o instanceof THREE.Mesh) o.castShadow = true;
@@ -1077,7 +1213,7 @@ export class CafeScene {
       const tie = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.035, 8, 24), standard('#ffb8cb', { roughness: 0.65 }));
       tie.rotation.y = Math.PI / 2;
       tie.rotation.z = Math.PI / 2;
-      tie.position.set(x + s * (w / 2 + 0.05), y - 0.5, -4.82);
+      tie.position.set(x + s * (w / 2 - 0.21), y - 0.5, -4.82);
       this.scene.add(tie);
     }
 
@@ -1203,6 +1339,7 @@ export class CafeScene {
 
     this.buildHangingSign(door);
     this.buildDoorBell(door);
+    this.addContactShadow(8.62, -5.18, 1.6, 0.45, 0.22);
 
     this.doorLight = new THREE.PointLight(0xffdca6, 0.1, 5, 2);
     this.doorLight.position.set(8.62, 2.15, -4.45);
@@ -1417,6 +1554,7 @@ export class CafeScene {
     miniShelf.position.set(0, 2.28, -4.98);
     miniShelf.castShadow = true;
     this.scene.add(miniShelf);
+    this.addContactShadow(0, -4.98, 2.5, 0.32, 0.18);
     const mugColors = ['#ffb8ca', '#bcebd9', '#ffe0a0', '#cab7e5'];
     for (let i = 0; i < 5; i++) {
       const mug = new THREE.Group();
@@ -1676,25 +1814,29 @@ export class CafeScene {
   }
 
   private buildCounter() {
-    const green = standard('#c7ebde', { roughness: 0.7 });
-    const dark = standard('#a7d8c7', { roughness: 0.72 });
+    const green = standard('#a9e6d1', { roughness: 0.66 });
+    const dark = standard('#7fd3b6', { roughness: 0.7 });
+    const cream = standard('#fff4e3', { roughness: 0.72 });
+    const pink = standard('#ffb0c8', { roughness: 0.68 });
     const body = new THREE.Mesh(new RoundedBoxGeometry(9.0, 0.98, 1.3, 6, 0.22), green);
     body.position.set(0, 0.5, 1.12);
     body.castShadow = true;
     body.receiveShadow = true;
     this.scene.add(body);
+    this.addContactShadow(0, 1.12, 9.2, 1.45, 0.22);
 
     // fluted front
     for (let i = 0; i < 27; i++) {
-      const flute = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.056, 0.056, 0.78, 12),
-        i % 2 === 0 ? dark : green,
-      );
+      const material = i % 9 === 4 ? pink : i % 3 === 0 ? cream : i % 2 === 0 ? dark : green;
+      const flute = new THREE.Mesh(new THREE.CylinderGeometry(0.056, 0.056, 0.78, 12), material);
       flute.position.set(-4.16 + i * 0.32, 0.55, 1.785);
       flute.receiveShadow = true;
       this.scene.add(flute);
     }
-    const kick = new THREE.Mesh(new RoundedBoxGeometry(9.06, 0.16, 1.32, 3, 0.05), standard('#f3b4c6', { roughness: 0.7 }));
+    const ribbon = new THREE.Mesh(new RoundedBoxGeometry(9.04, 0.075, 0.035, 3, 0.02), standard('#ffe7c2', { roughness: 0.55 }));
+    ribbon.position.set(0, 0.915, 1.79);
+    this.scene.add(ribbon);
+    const kick = new THREE.Mesh(new RoundedBoxGeometry(9.06, 0.16, 1.32, 3, 0.05), standard('#ff9fbb', { roughness: 0.66 }));
     kick.position.set(0, 0.075, 1.14);
     this.scene.add(kick);
 
@@ -1760,19 +1902,26 @@ export class CafeScene {
     const glassMat = new THREE.MeshPhysicalMaterial({
       color: 0xfff8f0,
       transparent: true,
-      opacity: 0.16,
-      roughness: 0.05,
-      transmission: 0.4,
+      opacity: 0.23,
+      roughness: 0.04,
+      transmission: 0.45,
       thickness: 0.1,
+      clearcoat: 1,
     });
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.48, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), glassMat);
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.48, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2), glassMat);
     dome.scale.set(1.1, 0.95, 0.74);
     dome.position.y = 0.19;
-    const domeRim = new THREE.Mesh(new THREE.TorusGeometry(0.47, 0.018, 8, 48), standard('#f6e1c9', { roughness: 0.3 }));
+    const domeRim = new THREE.Mesh(new THREE.TorusGeometry(0.47, 0.02, 8, 48), standard('#f0c889', { roughness: 0.28, metalness: 0.3 }));
     domeRim.rotation.x = Math.PI / 2;
     domeRim.scale.set(1, 0.74, 1);
     domeRim.position.y = 0.19;
-    display.add(base, rim, dome, domeRim);
+    const domeKnob = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 10), standard('#f0c889', { roughness: 0.28, metalness: 0.35 }));
+    domeKnob.position.set(0, 0.68, 0);
+    // pastel ribbon on the cloche
+    const ribbonBow = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.018, 6, 16), standard('#ff9fbb', { roughness: 0.5 }));
+    ribbonBow.position.set(0, 0.57, 0.04);
+    ribbonBow.rotation.x = Math.PI / 2;
+    display.add(base, rim, dome, domeRim, domeKnob, ribbonBow);
     const cakeColors = ['#ffd8e0', '#c9e9d5', '#f7e3a4', '#d7c1e7', '#ffe8c7'];
     for (let i = 0; i < 4; i++) {
       const cake = this.makeCake(cakeColors[i]);
@@ -1781,7 +1930,7 @@ export class CafeScene {
       display.add(cake);
       this.cakeMeshes.push(cake);
     }
-    display.position.set(-3.25, 1.1, 0.79);
+    display.position.set(-3.25, 1.118, 0.79);
     this.scene.add(display);
 
     // vase with flowers
@@ -1894,6 +2043,76 @@ export class CafeScene {
     const napkin = new THREE.Mesh(new RoundedBoxGeometry(0.22, 0.16, 0.12, 2, 0.03), standard('#fff7ec', { roughness: 0.9 }));
     napkin.position.set(0.02, 1.21, 1.5);
     this.scene.add(napkin);
+
+    this.buildCounterExtras();
+  }
+
+  private buildCounterExtras() {
+    // tiered dessert stand
+    const stand = new THREE.Group();
+    const gold = standard('#e9b96e', { roughness: 0.32, metalness: 0.35 });
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.22, 0.05, 24), gold);
+    base.position.y = 0.025;
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.42, 12), gold);
+    stem.position.y = 0.24;
+    const lowPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.4, 0.03, 28), standard('#fff2e4', { roughness: 0.4 }));
+    lowPlate.position.y = 0.46;
+    const highPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.29, 0.028, 24), standard('#fff2e4', { roughness: 0.4 }));
+    highPlate.position.y = 0.72;
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 10), standard('#ff8fae', { roughness: 0.4 }));
+    knob.position.y = 0.79;
+    stand.add(base, stem, lowPlate, highPlate, knob);
+    const cakeTones = ['#ffc2d2', '#a9e7cf', '#ffd982', '#c9b3e8', '#ffb59d'];
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const macaron = new THREE.Group();
+      const shellTop = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), standard(cakeTones[i], { roughness: 0.55 }));
+      shellTop.scale.y = 0.5;
+      shellTop.position.y = 0.035;
+      const filling = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.025, 14), standard('#fff0dc', { roughness: 0.7 }));
+      const shellBottom = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), standard(cakeTones[i], { roughness: 0.55 }));
+      shellBottom.scale.y = 0.5;
+      shellBottom.position.y = -0.008;
+      macaron.add(shellTop, filling, shellBottom);
+      macaron.position.set(Math.cos(a) * 0.31, 0.49, Math.sin(a) * 0.31);
+      stand.add(macaron);
+    }
+    for (let i = 0; i < 3; i++) {
+      const mini = this.makeCake(cakeTones[i]);
+      mini.scale.setScalar(0.42);
+      mini.position.set(-0.15 + i * 0.15, 0.735, 0.04);
+      stand.add(mini);
+    }
+    stand.position.set(-0.9, 1.118, 1.12);
+    stand.scale.setScalar(1.15);
+    this.scene.add(stand);
+
+    // syrup bottle caddy
+    const caddy = new THREE.Group();
+    const tray = new THREE.Mesh(new RoundedBoxGeometry(0.54, 0.08, 0.32, 3, 0.03), standard('#d9a677', { roughness: 0.6 }));
+    tray.position.y = 0.04;
+    caddy.add(tray);
+    const syrupColors = ['#ff86a8', '#7edbb9', '#ffce67', '#a78be0'];
+    for (let i = 0; i < 4; i++) {
+      const bottle = new THREE.Group();
+      const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.055, 0.24, 14), standard(syrupColors[i], { roughness: 0.25 }));
+      glass.position.y = 0.2;
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.04, 0.06, 12), standard(syrupColors[i], { roughness: 0.25 }));
+      neck.position.y = 0.34;
+      const pump = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.09, 8), standard('#f8e6c8', { roughness: 0.4 }));
+      pump.position.y = 0.41;
+      const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.05, 6), standard('#f8e6c8', { roughness: 0.4 }));
+      nozzle.rotation.z = Math.PI / 2;
+      nozzle.position.set(0.04, 0.45, 0);
+      const label = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 0.045), new THREE.MeshBasicMaterial({ color: '#fff7e8' }));
+      label.position.set(0, 0.2, 0.052);
+      bottle.add(glass, neck, pump, nozzle, label);
+      bottle.position.x = -0.185 + i * 0.123;
+      caddy.add(bottle);
+    }
+    caddy.position.set(1.85, 1.118, 1.16);
+    caddy.rotation.y = -0.16;
+    this.scene.add(caddy);
   }
 
   private buildTrainingTrophy() {
@@ -1918,10 +2137,12 @@ export class CafeScene {
   }
 
   private buildSeating() {
+    const seatColors = ['#ffb7ca', '#9ee3c9', '#ffd88f'];
+    // decorative counter stools against the back wall
     for (let i = 0; i < 3; i++) {
-      const x = SEATS[i].x;
+      const x = BACK_STOOLS[i].x;
       const stool = new THREE.Group();
-      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.35, 0.13, 24), standard(i === 1 ? '#ffc2d4' : '#c4ecdf', { roughness: 0.6 }));
+      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.35, 0.13, 24), standard(seatColors[i], { roughness: 0.55 }));
       seat.position.y = 0.62;
       seat.castShadow = true;
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, 0.48, 12), standard('#d5aa78', { roughness: 0.45, metalness: 0.15 }));
@@ -1929,45 +2150,120 @@ export class CafeScene {
       const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.26, 0.05, 20), standard('#e0b783', { roughness: 0.4, metalness: 0.15 }));
       foot.position.y = 0.06;
       stool.add(seat, leg, foot);
-      const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.55, 0.11, 0.5, 4, 0.06), standard('#ffdee6', { roughness: 0.9 }));
+      const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.55, 0.11, 0.5, 4, 0.06), standard(i === 1 ? '#ffd6e2' : '#d3f5e8', { roughness: 0.9 }));
       cushion.position.y = 0.73;
       cushion.castShadow = true;
       cushion.visible = false;
       stool.add(cushion);
       this.cushionMeshes.push(cushion);
-      stool.position.set(x, 0, -1.7);
+      stool.position.set(x, 0, -4.02);
       this.scene.add(stool);
+      this.addContactShadow(x, -4.02, 0.78, 0.78, 0.18);
+
+      // round guest mat in front of each back stool
+      const mat = new THREE.Group();
+      const matBase = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.6, 0.035, 32), standard(seatColors[i], { roughness: 0.95 }));
+      matBase.position.y = 0.018;
+      const matInner = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.41, 0.04, 32), standard('#fff6ec', { roughness: 0.95 }));
+      matInner.position.y = 0.022;
+      const matDot = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.045, 20), standard(i === 1 ? '#ffb7ca' : '#9ee3c9', { roughness: 0.9 }));
+      matDot.position.y = 0.026;
+      mat.add(matBase, matInner, matDot);
+      mat.position.set(x, 0, BACK_STOOLS[i].z);
+      mat.receiveShadow = true;
+      this.scene.add(mat);
     }
 
-    // low banquette along back, creates depth
-    const bench = new THREE.Group();
-    const benchBase = new THREE.Mesh(new RoundedBoxGeometry(7.2, 0.45, 0.78, 4, 0.1), standard('#c2e8db', { roughness: 0.8 }));
-    benchBase.position.y = 0.22;
-    const benchSeat = new THREE.Mesh(new RoundedBoxGeometry(7.2, 0.18, 0.88, 4, 0.08), standard('#ffcfdc', { roughness: 0.9 }));
-    benchSeat.position.y = 0.51;
-    const benchBack = new THREE.Mesh(new RoundedBoxGeometry(7.2, 0.75, 0.18, 4, 0.08), standard('#ffdbe5', { roughness: 0.9 }));
-    benchBack.position.set(0, 0.85, -0.35);
-    bench.add(benchBase, benchSeat, benchBack);
-    bench.position.set(0, 0, -2.62);
-    this.scene.add(bench);
-
-    // cushions on banquette
+    // foreground tables and chairs where customers sit
+    const tableColors = ['#ffd6e4', '#c9f2e3', '#fff0c9'];
     for (let i = 0; i < 3; i++) {
-      const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.6, 0.45, 0.14, 4, 0.06), standard(i % 2 ? '#ffd9a1' : '#d9c9ee', { roughness: 0.95 }));
-      cushion.position.set(-2.1 + i * 2.1, 0.85, -2.4);
-      cushion.rotation.z = (i - 1) * 0.1;
+      const x = SEATS[i].x;
+      const tableColor = tableColors[i];
+      const table = new THREE.Group();
+      const top = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.5, 0.06, 32), standard(tableColor, { roughness: 0.5 }));
+      top.position.y = 0.82;
+      top.castShadow = true;
+      const column = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.76, 16), standard('#e8c9a8', { roughness: 0.45 }));
+      column.position.y = 0.41;
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.05, 24), standard('#e8c9a8', { roughness: 0.45 }));
+      base.position.y = 0.025;
+      table.add(top, column, base);
+      table.position.set(x, 0, 2.55);
+      this.scene.add(table);
+      this.addContactShadow(x, 2.55, 1.05, 1.05, 0.18);
+
+      // customer chair facing the counter
+      const chair = this.makeChair(seatColors[i]);
+      chair.position.set(x, 0, CHAIR_Z);
+      chair.rotation.y = Math.PI;
+      this.scene.add(chair);
+      this.addContactShadow(x, CHAIR_Z, 0.62, 0.62, 0.16);
+
+      // small rug under each table
+      const rug = new THREE.Mesh(
+        new THREE.CircleGeometry(0.78, 32),
+        new THREE.MeshStandardMaterial({ color: tableColor, transparent: true, opacity: 0.35, roughness: 1 }),
+      );
+      rug.rotation.x = -Math.PI / 2;
+      rug.position.set(x, 0.008, 2.55);
+      rug.receiveShadow = true;
+      this.scene.add(rug);
+    }
+
+    // long banquette against the back wall, below the windows
+    const bench = new THREE.Group();
+    const benchBase = new THREE.Mesh(new RoundedBoxGeometry(6.8, 0.46, 0.72, 4, 0.1), standard('#9fdec6', { roughness: 0.8 }));
+    benchBase.position.y = 0.23;
+    const benchSeat = new THREE.Mesh(new RoundedBoxGeometry(6.8, 0.18, 0.82, 4, 0.08), standard('#ffc9d9', { roughness: 0.9 }));
+    benchSeat.position.y = 0.54;
+    const benchBack = new THREE.Mesh(new RoundedBoxGeometry(6.8, 0.58, 0.16, 4, 0.08), standard('#ffdbe5', { roughness: 0.9 }));
+    benchBack.position.set(0, 0.92, -0.3);
+    const benchTop = new THREE.Mesh(new RoundedBoxGeometry(6.82, 0.08, 0.2, 3, 0.03), standard('#f7d08d', { roughness: 0.5, metalness: 0.15 }));
+    benchTop.position.set(0, 1.24, -0.3);
+    bench.add(benchBase, benchSeat, benchBack, benchTop);
+    bench.position.set(0, 0, -4.72);
+    this.scene.add(bench);
+    this.addContactShadow(0, -4.72, 7.0, 0.9, 0.2);
+
+    // throw cushions along the banquette
+    const throwColors = ['#ffd27d', '#c9b6ea', '#ffb3c7', '#a9e7d2', '#f7cfa4'];
+    for (let i = 0; i < 5; i++) {
+      const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.52, 0.4, 0.14, 4, 0.06), standard(throwColors[i], { roughness: 0.95 }));
+      cushion.position.set(-2.4 + i * 1.2, 0.8, -4.8);
+      cushion.rotation.set(-0.16, 0, (i - 2) * 0.08);
+      cushion.castShadow = true;
       this.scene.add(cushion);
     }
 
-    // small wall arches / art
-    for (const x of [-5.4, 5.4]) {
-      const art = new THREE.Mesh(new RoundedBoxGeometry(0.9, 0.7, 0.06, 3, 0.04), standard('#ffd9df', { roughness: 0.6 }));
-      art.position.set(x, 2.4, -5.18);
+    // framed prints between the windows and the menu board
+    for (const x of [-1.93, 1.93]) {
+      const art = new THREE.Mesh(new RoundedBoxGeometry(0.8, 0.62, 0.06, 3, 0.04), standard('#ffd0dc', { roughness: 0.55 }));
+      art.position.set(x, 1.98, -5.18);
       const posterTex = this.makePosterTexture();
-      const poster = new THREE.Mesh(new THREE.PlaneGeometry(0.75, 0.55), new THREE.MeshBasicMaterial({ map: posterTex, toneMapped: false }));
-      poster.position.set(x, 2.4, -5.14);
+      const poster = new THREE.Mesh(new THREE.PlaneGeometry(0.66, 0.48), new THREE.MeshBasicMaterial({ map: posterTex, toneMapped: false }));
+      poster.position.set(x, 1.98, -5.14);
       this.scene.add(art, poster);
     }
+  }
+
+  private makeChair(seatColor: string): THREE.Group {
+    const group = new THREE.Group();
+    const wood = standard('#d8ae82', { roughness: 0.5 });
+    const seat = new THREE.Mesh(new RoundedBoxGeometry(0.52, 0.09, 0.48, 4, 0.05), standard(seatColor, { roughness: 0.65 }));
+    seat.position.y = 0.48;
+    seat.castShadow = true;
+    const back = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.42, 0.08, 4, 0.04), standard(seatColor, { roughness: 0.65 }));
+    back.position.set(0, 0.75, -0.22);
+    back.castShadow = true;
+    const legGeo = new THREE.CylinderGeometry(0.035, 0.03, 0.46, 10);
+    for (const [lx, lz] of [[-0.2, 0.18], [0.2, 0.18], [-0.2, -0.18], [0.2, -0.18]] as const) {
+      const leg = new THREE.Mesh(legGeo, wood);
+      leg.position.set(lx, 0.23, lz);
+      leg.castShadow = true;
+      group.add(leg);
+    }
+    group.add(seat, back);
+    return group;
   }
 
   private buildBackDecor() {
@@ -1982,16 +2278,15 @@ export class CafeScene {
   }
 
   private buildPlants() {
-    const bigPlant = this.makeMonstera(1.25);
-    bigPlant.position.set(-6.7, 0, -2.8);
+    const bigPlant = this.makeMonstera(1.2);
+    bigPlant.position.set(-6.75, 0, -2.7);
     this.scene.add(bigPlant);
-    const bigPlant2 = this.makeMonstera(1.05);
-    bigPlant2.position.set(6.65, 0, -2.6);
-    this.scene.add(bigPlant2);
+    this.addContactShadow(-6.75, -2.7, 1.15, 1.15, 0.22);
     const cherry = this.makeCherryPot();
-    cherry.position.set(6.15, 0, -4.35);
-    cherry.scale.setScalar(0.95);
+    cherry.position.set(4.65, 0, -4.4);
+    cherry.scale.setScalar(1.02);
     this.scene.add(cherry);
+    this.addContactShadow(4.65, -4.4, 0.75, 0.75, 0.18);
 
     // small fruit crates / bags on floor
     const crate = new THREE.Group();
@@ -2001,19 +2296,21 @@ export class CafeScene {
     const crateLabel = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.16), new THREE.MeshBasicMaterial({ map: this.makeLabelTexture('蜜 桃'), transparent: true }));
     crateLabel.position.set(0, 0.25, 0.252);
     crate.add(crateBox, crateLabel);
-    crate.position.set(-4.4, 0, -2.3);
+    crate.position.set(-4.45, 0, -3.3);
     crate.rotation.y = 0.2;
     this.scene.add(crate);
+    this.addContactShadow(-4.45, -3.3, 0.82, 0.62, 0.18);
     // rounded jars of fruit on top
     for (let i = 0; i < 3; i++) {
-      const peach = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 12), standard('#ffb3a3', { roughness: 0.55 }));
-      peach.position.set(-4.6 + i * 0.2, 0.52, -2.35);
+      const peach = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 12), standard('#ffab9a', { roughness: 0.55 }));
+      peach.position.set(-4.65 + i * 0.2, 0.52, -3.35);
       this.scene.add(peach);
     }
     const bag = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.6, 0.3, 3, 0.08), standard('#fff0e5', { roughness: 0.9 }));
-    bag.position.set(-4.95, 0.32, -3.1);
+    bag.position.set(-4.85, 0.32, -4.0);
     bag.rotation.y = -0.2;
     this.scene.add(bag);
+    this.addContactShadow(-4.85, -4.0, 0.62, 0.42, 0.16);
   }
 
   private buildStringLights() {
@@ -2041,6 +2338,36 @@ export class CafeScene {
       }
     }
     // second smaller string over windows? no, keep clean
+  }
+
+  private buildBunting() {
+    const flagColors = ['#ff8fb2', '#7fd9bb', '#ffd06e', '#b49ce4', '#84c8e8'];
+    const flagShape = new THREE.Shape();
+    flagShape.moveTo(-0.16, 0);
+    flagShape.lineTo(0.16, 0);
+    flagShape.lineTo(0, -0.32);
+    flagShape.closePath();
+    const flagGeo = new THREE.ShapeGeometry(flagShape);
+    for (const side of [-1, 1] as const) {
+      const x0 = side * 2.1;
+      const x1 = side * 6.6;
+      const curve = new THREE.QuadraticBezierCurve3(
+        new THREE.Vector3(x0, 5.12, -4.72),
+        new THREE.Vector3((x0 + x1) / 2, 4.6, -4.72),
+        new THREE.Vector3(x1, 5.12, -4.72),
+      );
+      const cord = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.01, 4, false), standard('#b18b7c', { roughness: 0.8 }));
+      this.scene.add(cord);
+      for (let i = 0; i < 11; i++) {
+        const t = 0.08 + (i / 10) * 0.84;
+        const p = curve.getPoint(t);
+        const flag = new THREE.Mesh(flagGeo, standard(flagColors[(i + (side > 0 ? 2 : 0)) % flagColors.length], { roughness: 0.8, side: THREE.DoubleSide }));
+        flag.position.copy(p);
+        flag.rotation.z = Math.sin(t * Math.PI) * side * 0.04;
+        flag.castShadow = false;
+        this.scene.add(flag);
+      }
+    }
   }
 
   // ───────────────────────────── prop builders
@@ -2175,39 +2502,88 @@ export class CafeScene {
 
   private makeMonstera(scale: number): THREE.Group {
     const group = new THREE.Group();
-    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.36, 0.65, 24), standard('#ffd9d2', { roughness: 0.8 }));
-    pot.position.y = 0.33;
+    const potMat = standard('#ffbccb', { roughness: 0.62 });
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.37, 0.62, 28), potMat);
+    pot.position.y = 0.31;
     pot.castShadow = true;
-    const potTrim = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.035, 8, 32), standard('#f3bcc2', { roughness: 0.65 }));
-    potTrim.rotation.x = Math.PI / 2;
-    potTrim.position.y = 0.63;
-    group.add(pot, potTrim);
+    const potRim = new THREE.Mesh(new THREE.CylinderGeometry(0.54, 0.54, 0.1, 28), standard('#fff2e4', { roughness: 0.55 }));
+    potRim.position.y = 0.62;
+    potRim.castShadow = true;
+    const potBand = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.48, 0.1, 28), standard('#94ddc3', { roughness: 0.6 }));
+    potBand.position.y = 0.48;
+    const soil = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.44, 0.03, 24), standard('#8a5c4c', { roughness: 1 }));
+    soil.position.y = 0.655;
+    group.add(pot, potRim, potBand, soil);
+
+    // tiny face on the pot
+    const faceMat = new THREE.MeshBasicMaterial({ color: '#7c4a55' });
+    for (const s of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.026, 10, 8), faceMat);
+      eye.position.set(s * 0.11, 0.36, 0.405);
+      eye.scale.y = 1.2;
+      group.add(eye);
+      const cheek = new THREE.Mesh(new THREE.CircleGeometry(0.045, 12), new THREE.MeshBasicMaterial({ color: '#ff7896', transparent: true, opacity: 0.55 }));
+      cheek.position.set(s * 0.2, 0.31, 0.39);
+      cheek.rotation.x = -0.3;
+      group.add(cheek);
+    }
+    const smile = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.009, 6, 18, Math.PI), faceMat);
+    smile.position.set(0, 0.29, 0.42);
+    smile.rotation.z = Math.PI;
+    group.add(smile);
+
     const rand = mulberry(77);
-    for (let i = 0; i < 9; i++) {
-      const a = rand() * Math.PI * 2;
-      const reach = 0.4 + rand() * 0.7;
-      const height = 1.05 + rand() * 1.25;
+    const leafGeo = monsteraLeafGeometry();
+    const veinMat = standard('#4f8a63', { roughness: 0.9 });
+    const tones = ['#3f9d6e', '#61b884', '#2f8a60', '#7cc899', '#4aa978'];
+    const stems = 10;
+    for (let i = 0; i < stems; i++) {
+      const a = (i / stems) * Math.PI * 2 + rand() * 0.4;
+      const reach = 0.45 + rand() * 0.75;
+      const height = 1.0 + rand() * 1.15;
       const end = new THREE.Vector3(Math.cos(a) * reach, height, Math.sin(a) * reach);
-      const start = new THREE.Vector3(0, 0.6, 0);
-      const mid = new THREE.Vector3(Math.cos(a) * reach * 0.28, height * 0.56, Math.sin(a) * reach * 0.28);
+      const start = new THREE.Vector3(0, 0.62, 0);
+      const mid = new THREE.Vector3(Math.cos(a) * reach * 0.26, height * 0.55, Math.sin(a) * reach * 0.26);
       const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
-      const stem = new THREE.Mesh(new THREE.TubeGeometry(curve, 16, 0.018, 5, false), standard('#619e79', { roughness: 0.8 }));
+      const stem = new THREE.Mesh(new THREE.TubeGeometry(curve, 18, 0.02, 6, false), standard('#4f9a6d', { roughness: 0.85 }));
+      stem.castShadow = true;
       group.add(stem);
-      const leaf = new THREE.Mesh(
-        new THREE.SphereGeometry(0.34, 10, 8),
-        standard(i % 3 === 0 ? '#7fbb93' : i % 3 === 1 ? '#99d3ad' : '#68a97f', { roughness: 0.78 }),
-      );
-      leaf.scale.set(0.85, 0.08, 1.35);
-      leaf.position.copy(end);
-      leaf.rotation.set(0.4 + rand() * 0.2, a, -0.35 - rand() * 0.3);
+
+      const leafGroup = new THREE.Group();
+      const leaf = new THREE.Mesh(leafGeo, standard(tones[i % tones.length], { roughness: 0.68, side: THREE.DoubleSide }));
       leaf.castShadow = true;
-      group.add(leaf);
-      // leaf vein
-      const vein = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.008, 0.4, 4), standard('#558d68', { roughness: 0.9 }));
-      vein.position.copy(end).add(new THREE.Vector3(0, 0.035, 0));
-      vein.rotation.z = Math.PI / 2;
-      vein.rotation.y = a;
-      group.add(vein);
+      leaf.scale.setScalar(0.56 + rand() * 0.34);
+      leafGroup.add(leaf);
+
+      const vein = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.013, 0.96, 5), veinMat);
+      vein.position.set(0, 0.48, 0.006);
+      leafGroup.add(vein);
+      const sideVein = (x1: number, y1: number, x2: number, y2: number) => {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const v = new THREE.Mesh(new THREE.CylinderGeometry(0.0045, 0.0045, Math.hypot(dx, dy), 4), veinMat);
+        v.position.set((x1 + x2) / 2, (y1 + y2) / 2, 0.006);
+        v.rotation.z = -Math.atan2(dx, dy);
+        leafGroup.add(v);
+      };
+      for (let j = 0; j < 3; j++) {
+        const y = 0.28 + j * 0.2;
+        sideVein(0.01, y, 0.24, y + 0.1);
+        sideVein(-0.01, y, -0.24, y + 0.1);
+      }
+      leafGroup.position.copy(end);
+      leafGroup.rotation.set(-0.18 - rand() * 0.35, (rand() - 0.5) * 1.1, (rand() - 0.5) * 0.6);
+      group.add(leafGroup);
+    }
+
+    // baby leaves around the soil
+    for (let i = 0; i < 3; i++) {
+      const a = rand() * Math.PI * 2;
+      const baby = new THREE.Mesh(leafGeo, standard(tones[(i + 2) % tones.length], { roughness: 0.7, side: THREE.DoubleSide }));
+      baby.scale.setScalar(0.24);
+      baby.position.set(Math.cos(a) * 0.2, 0.69, Math.sin(a) * 0.2);
+      baby.rotation.set(-0.5, a, 0.4);
+      group.add(baby);
     }
     group.scale.setScalar(scale);
     return group;
@@ -2215,26 +2591,54 @@ export class CafeScene {
 
   private makeCherryPot(): THREE.Group {
     const group = new THREE.Group();
-    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.22, 0.5, 20), standard('#f4d8bf', { roughness: 0.8 }));
-    pot.position.y = 0.25;
-    const trunkMat = standard('#9b735c', { roughness: 0.9 });
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 1.1, 8), trunkMat);
-    trunk.position.y = 0.95;
-    trunk.rotation.z = 0.12;
-    group.add(pot, trunk);
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.23, 0.55, 22), standard('#ffe3cf', { roughness: 0.7 }));
+    pot.position.y = 0.28;
+    pot.castShadow = true;
+    const potRim = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.06, 22), standard('#ff9fbb', { roughness: 0.6 }));
+    potRim.position.y = 0.55;
+    const soil = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.025, 20), standard('#8a5c4c', { roughness: 1 }));
+    soil.position.y = 0.57;
+    const trunkMat = standard('#9b6a55', { roughness: 0.9 });
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.085, 1.1, 8), trunkMat);
+    trunk.position.y = 1.1;
+    trunk.rotation.z = 0.1;
+    trunk.castShadow = true;
+    group.add(pot, potRim, soil, trunk);
     const rand = mulberry(1337);
-    for (let i = 0; i < 5; i++) {
-      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.04, 0.65, 6), trunkMat);
-      branch.position.set(-0.18 + i * 0.1, 1.45 + i * 0.1, 0);
-      branch.rotation.z = -0.65 + i * 0.28;
-      branch.rotation.y = i * 0.5;
+    const branchTips: THREE.Vector3[] = [];
+    for (let i = 0; i < 6; i++) {
+      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.038, 0.7, 6), trunkMat);
+      const lean = -0.75 + i * 0.3;
+      branch.position.set(-0.2 + i * 0.085, 1.6 + (i % 3) * 0.17, (rand() - 0.5) * 0.18);
+      branch.rotation.z = lean;
+      branch.rotation.y = i * 0.55;
       group.add(branch);
+      branchTips.push(new THREE.Vector3(-0.2 + i * 0.085 + Math.sin(lean) * -0.35, 1.9 + (i % 3) * 0.17, (rand() - 0.5) * 0.18));
     }
-    for (let i = 0; i < 15; i++) {
-      const cluster = new THREE.Mesh(new THREE.SphereGeometry(0.15 + rand() * 0.1, 8, 6), standard(i % 3 === 0 ? '#ffc7d7' : '#ffdfe7', { roughness: 0.9 }));
-      cluster.position.set((rand() - 0.5) * 1.3, 1.55 + rand() * 0.75, (rand() - 0.5) * 0.65);
-      cluster.scale.y = 0.85;
+    const blossomTones = ['#ffb3c8', '#ffd1de', '#ffe6ee', '#ff9fbc'];
+    const leafMat = standard('#82c39c', { roughness: 0.8, side: THREE.DoubleSide });
+    for (let i = 0; i < 22; i++) {
+      const tip = branchTips[i % branchTips.length];
+      const bx = tip.x + (rand() - 0.5) * 0.55;
+      const by = tip.y + rand() * 0.5;
+      const bz = tip.z + (rand() - 0.5) * 0.4;
+      const cluster = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08 + rand() * 0.06, 8, 6),
+        standard(blossomTones[i % blossomTones.length], { roughness: 0.75 }),
+      );
+      cluster.position.set(bx, by, bz);
+      cluster.scale.set(1, 0.78, 1);
       group.add(cluster);
+      const highlight = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 5), standard('#fff2f4', { roughness: 0.6 }));
+      highlight.position.set(bx + 0.02, by + 0.045, bz + 0.055);
+      group.add(highlight);
+      if (i % 3 === 0) {
+        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 4), leafMat);
+        leaf.scale.set(1, 0.12, 0.55);
+        leaf.position.set(bx + (rand() - 0.5) * 0.2, by - 0.07, bz + 0.06);
+        leaf.rotation.z = rand() * 1.2;
+        group.add(leaf);
+      }
     }
     return group;
   }
@@ -2283,7 +2687,7 @@ export class CafeScene {
         group.add(bud);
       }
     }
-    group.position.set(x, 3.07, -5.0);
+    group.position.set(x, 3.35, -5.0);
     return group;
   }
 
@@ -2298,8 +2702,8 @@ export class CafeScene {
     this.cakeMeshes.forEach((cake, i) => {
       cake.visible = i < 4 + this.upgradeLevels.display * 2;
       if (i >= 4) {
-        cake.position.x = -0.32 + i * 0.21;
-        cake.scale.setScalar(0.62);
+        cake.position.set(-0.32 + (i - 4) * 0.21, 0.19, -0.22);
+        cake.scale.setScalar(0.58);
       }
     });
     this.trophyGroup.visible = this.upgradeLevels.training > 0;
@@ -2310,7 +2714,7 @@ export class CafeScene {
     const g = ctx.createLinearGradient(0, 0, 0, h);
     g.addColorStop(0, theme.skyTop);
     g.addColorStop(0.55, theme.skyBottom);
-    g.addColorStop(1, '#fff0e8');
+    g.addColorStop(1, theme.id === 'night' ? '#5b4c74' : '#ffe2e8');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
 
@@ -2355,7 +2759,7 @@ export class CafeScene {
         const cx = rand() * w;
         const cy = 150 + rand() * 380;
         const rw = 90 + rand() * 120;
-        ctx.fillStyle = 'rgba(255,249,244,0.38)';
+        ctx.fillStyle = i % 2 ? 'rgba(255,241,246,0.55)' : 'rgba(255,251,238,0.5)';
         ctx.beginPath();
         ctx.ellipse(cx, cy, rw, 30 + rand() * 30, rand() * 0.3, 0, Math.PI * 2);
         ctx.fill();
@@ -2366,7 +2770,7 @@ export class CafeScene {
     // distant skyline / trees
     ctx.filter = 'blur(2px)';
     const baseY = h * 0.75;
-    ctx.fillStyle = theme.id === 'night' ? 'rgba(50,46,74,0.62)' : 'rgba(233,169,179,0.38)';
+    ctx.fillStyle = theme.id === 'night' ? 'rgba(50,46,74,0.62)' : 'rgba(226,146,166,0.44)';
     for (let i = 0; i < 12; i++) {
       const bw = 40 + rand() * 80;
       const bh = 60 + rand() * 160;
@@ -2399,9 +2803,9 @@ export class CafeScene {
         ctx.quadraticCurveTo(bx + (side ? -60 : 60), treeBase - 160 - i * 30, bx + (side ? -110 : 110), treeBase - 210 - i * 35);
         ctx.stroke();
       }
-      for (let i = 0; i < 18; i++) {
+      for (let i = 0; i < 24; i++) {
         ctx.fillStyle = blossomColors[i % blossomColors.length];
-        ctx.globalAlpha = 0.8;
+        ctx.globalAlpha = 0.95;
         ctx.beginPath();
         ctx.arc(bx + (side ? -1 : 1) * (20 + rand() * 175), treeBase - 170 - rand() * 190, 10 + rand() * 18, 0, Math.PI * 2);
         ctx.fill();
@@ -2424,13 +2828,35 @@ export class CafeScene {
     // glass reflection
     const shine = ctx.createLinearGradient(0, 0, w, h);
     shine.addColorStop(0.28, 'rgba(255,255,255,0)');
-    shine.addColorStop(0.34, 'rgba(255,255,255,0.18)');
-    shine.addColorStop(0.4, 'rgba(255,255,255,0.04)');
-    shine.addColorStop(0.47, 'rgba(255,255,255,0.13)');
+    shine.addColorStop(0.34, 'rgba(255,255,255,0.09)');
+    shine.addColorStop(0.4, 'rgba(255,255,255,0.02)');
+    shine.addColorStop(0.47, 'rgba(255,255,255,0.07)');
     shine.addColorStop(0.55, 'rgba(255,255,255,0)');
     ctx.fillStyle = shine;
     ctx.fillRect(0, 0, w, h);
   }
+}
+
+let monsteraLeafGeo: THREE.ShapeGeometry | null = null;
+
+function monsteraLeafGeometry(): THREE.ShapeGeometry {
+  if (monsteraLeafGeo) return monsteraLeafGeo;
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0.02);
+  shape.bezierCurveTo(0.2, 0.12, 0.36, 0.38, 0.3, 0.58);
+  shape.lineTo(0.12, 0.52);
+  shape.lineTo(0.3, 0.72);
+  shape.lineTo(0.11, 0.68);
+  shape.lineTo(0.22, 0.86);
+  shape.quadraticCurveTo(0.12, 0.98, 0, 1);
+  shape.quadraticCurveTo(-0.12, 0.98, -0.22, 0.86);
+  shape.lineTo(-0.11, 0.68);
+  shape.lineTo(-0.3, 0.72);
+  shape.lineTo(-0.12, 0.52);
+  shape.lineTo(-0.3, 0.58);
+  shape.bezierCurveTo(-0.36, 0.38, -0.2, 0.12, 0, 0.02);
+  monsteraLeafGeo = new THREE.ShapeGeometry(shape, 16);
+  return monsteraLeafGeo;
 }
 
 function mulberry(a: number) {

@@ -420,7 +420,122 @@ export const DRINKS: DrinkDef[] = [
     finish: 'scoop',
     recipe: { tea: 'none', milk: 'fresh', flavor: 'brownsugar', topping: 'pearl', ice: 'normal', sugar: 'full', size: 'medium' },
   },
+  {
+    id: 'caramel_pudding',
+    name: '焦糖布丁奶茶',
+    latin: 'CREME BRULEE',
+    tagline: '烤得脆脆的焦糖，盖在软乎乎的布丁上。',
+    price: 35,
+    color: '#e8c398',
+    colorTop: '#fff3dc',
+    accent: '#a76d3f',
+    unlockDay: 999,
+    badge: '城市限定',
+    category: 'tea',
+    finish: 'shake',
+    source: 'city',
+    recipe: { tea: 'assam', milk: 'fresh', flavor: 'brownsugar', topping: 'cheese', ice: 'less', sugar: 'half', size: 'medium' },
+  },
+  {
+    id: 'osmanthus_jelly',
+    name: '桂花白玉冻',
+    latin: 'OSMANTHUS JELLY',
+    tagline: '一勺桂花蜜，让整杯茶都落满秋天。',
+    price: 28,
+    color: '#dbe3a0',
+    colorTop: '#f8f0c9',
+    accent: '#c9a23f',
+    unlockDay: 999,
+    badge: '城市限定',
+    category: 'tea',
+    finish: 'shake',
+    source: 'city',
+    recipe: { tea: 'jasmine', milk: 'none', flavor: 'osmanthus', topping: 'jelly', ice: 'less', sugar: 'half', size: 'medium' },
+  },
+  {
+    id: 'oolong_shake',
+    name: '炭焙乌龙奶昔',
+    latin: 'ROASTED OOLONG',
+    tagline: '焙火香气藏进绵密奶昔，像傍晚的壁炉。',
+    price: 36,
+    color: '#c9a27e',
+    colorTop: '#fff0dd',
+    accent: '#7c543c',
+    unlockDay: 999,
+    badge: '城市限定',
+    category: 'milkshake',
+    finish: 'blend',
+    source: 'city',
+    recipe: { tea: 'oolong', milk: 'fresh', flavor: 'brownsugar', topping: 'cheese', ice: 'less', sugar: 'half', size: 'large' },
+  },
+  {
+    id: 'sea_peach',
+    name: '海风蜜桃冰茶',
+    latin: 'SEA BREEZE',
+    tagline: '海盐、蜜桃和一点柠檬色的阳光。',
+    price: 34,
+    color: '#ffb39a',
+    colorTop: '#ffe1cf',
+    accent: '#f08a6d',
+    unlockDay: 999,
+    badge: '旅行限定',
+    category: 'tea',
+    finish: 'shake',
+    source: 'travel',
+    recipe: { tea: 'oolong', milk: 'none', flavor: 'peach', topping: 'none', ice: 'normal', sugar: 'half', size: 'large' },
+  },
+  {
+    id: 'mist_matcha',
+    name: '云雾抹茶拿铁',
+    latin: 'MIST MATCHA',
+    tagline: '山里的雾，落进一杯青绿色的拿铁。',
+    price: 35,
+    color: '#aed09a',
+    colorTop: '#f7f7e8',
+    accent: '#658b5b',
+    unlockDay: 999,
+    badge: '旅行限定',
+    category: 'tea',
+    finish: 'shake',
+    source: 'travel',
+    recipe: { tea: 'matcha', milk: 'fresh', flavor: 'none', topping: 'jelly', ice: 'less', sugar: 'half', size: 'large' },
+  },
+  {
+    id: 'snow_osmanthus',
+    name: '雪夜桂花热奶',
+    latin: 'SNOW NIGHT',
+    tagline: '雪花落在窗台，桂花落在热牛奶里。',
+    price: 33,
+    color: '#e9dba4',
+    colorTop: '#fff8e8',
+    accent: '#c09a48',
+    unlockDay: 999,
+    badge: '旅行限定',
+    category: 'tea',
+    finish: 'shake',
+    source: 'travel',
+    recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'osmanthus', topping: 'none', ice: 'hot', sugar: 'half', size: 'medium' },
+  },
+  {
+    id: 'star_peach_shake',
+    name: '星砂蜜桃奶昔',
+    latin: 'STAR SAND',
+    tagline: '把夜市的星光打碎，撒进蜜桃奶昔里。',
+    price: 38,
+    color: '#ffb9c9',
+    colorTop: '#f2e9ff',
+    accent: '#b18bd8',
+    unlockDay: 999,
+    badge: '旅行限定',
+    category: 'milkshake',
+    finish: 'blend',
+    source: 'travel',
+    recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'peach', topping: 'pearl', ice: 'less', sugar: 'half', size: 'large' },
+  },
 ];
+
+export const CITY_RECIPE_IDS = DRINKS.filter((drink) => drink.source === 'city').map((drink) => drink.id);
+export const TRAVEL_RECIPE_IDS = DRINKS.filter((drink) => drink.source === 'travel').map((drink) => drink.id);
 
 export const DRINKS_MAP = Object.fromEntries(DRINKS.map((d) => [d.id, d])) as Record<string, DrinkDef>;
 
@@ -798,7 +913,7 @@ export const TUTORIAL_STEPS = [
   },
   {
     title: '写进小本子',
-    text: '确认点单后，按下绿色的「记下来」按钮。订单会写进手账，客人也会开始耐心等待。',
+    text: '确认点单后，按下绿色的「记下来」按钮。订单会写进手账，而客人的耐心从到店起就在倒数。',
     icon: 'notebook',
   },
   {
@@ -818,8 +933,8 @@ export const TUTORIAL_STEPS = [
   },
 ];
 
-export function getDayConfig(day: number): DayConfig {
-  const unlocked = DRINKS.filter((d) => d.unlockDay <= day);
+export function getDayConfig(day: number, extraDrinkIds: string[] = []): DayConfig {
+  const unlocked = DRINKS.filter((d) => d.unlockDay <= day || extraDrinkIds.includes(d.id));
   const newDrinks = DRINKS.filter((d) => d.unlockDay === day);
   const theme = THEMES[(day - 1) % THEMES.length];
   return {
@@ -896,10 +1011,10 @@ export function customerForDay(day: number, vipChance: number, met: Set<string>)
   return { customer: all[Math.floor(Math.random() * all.length)], vip: false };
 }
 
-export function drinkForDay(day: number): DrinkDef {
-  const pool = DRINKS.filter((d) => d.unlockDay <= day);
+export function drinkForDay(day: number, extraDrinkIds: string[] = []): DrinkDef {
+  const pool = DRINKS.filter((d) => d.unlockDay <= day || extraDrinkIds.includes(d.id));
   const roll = Math.random();
-  const newest = pool.filter((d) => d.unlockDay >= day - 1);
+  const newest = pool.filter((d) => !extraDrinkIds.includes(d.id) && d.unlockDay >= day - 1);
   if (newest.length && roll < 0.35) return newest[Math.floor(Math.random() * newest.length)];
   return pool[Math.floor(Math.random() * pool.length)];
 }

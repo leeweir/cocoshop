@@ -51,6 +51,8 @@ export class Chibi {
   private hop = 0;
   private shake = 0;
   private angry = false;
+  private sitting = false;
+  private sitT = 0;
   private disposed = false;
 
   constructor(customer: CustomerDef, vip = false) {
@@ -702,8 +704,12 @@ export class Chibi {
     this.walking = value;
   }
 
+  setSitting(value: boolean) {
+    this.sitting = value;
+  }
+
   cheer() {
-    this.hop = 1;
+    this.hop = this.sitting ? 0.45 : 1;
     this.angry = false;
     this.setMood('happy');
   }
@@ -725,8 +731,18 @@ export class Chibi {
     if (this.disposed) return;
     this.time += dt;
     const t = this.time;
-    const bob = Math.sin(t * 2.1 + this.walkPhase) * (this.walking ? 0.015 : 0.012);
-    this.visual.position.y = bob + (this.hop > 0 ? Math.abs(Math.sin((1 - this.hop) * Math.PI * 1.5)) * 0.25 : 0);
+
+    // sitting pose blend
+    const sitTarget = this.sitting ? 1 : 0;
+    this.sitT += (sitTarget - this.sitT) * Math.min(1, dt * 5);
+    const sit = this.sitT;
+    const sitY = sit * -0.10;
+    const sitLegRot = sit * -1.35;
+    const sitBodyTilt = sit * -0.15;
+
+    const idle = 1 - sit;
+    const bob = sit > 0.05 ? 0 : Math.sin(t * 2.1 + this.walkPhase) * (this.walking ? 0.015 : 0.012);
+    this.visual.position.y = sitY + bob + (this.hop > 0 ? Math.abs(Math.sin((1 - this.hop) * Math.PI * 1.5)) * 0.25 : 0);
     if (this.hop > 0) {
       this.hop = Math.max(0, this.hop - dt * 0.8);
     }
@@ -740,19 +756,21 @@ export class Chibi {
       this.tail.rotation.z = Math.sin(t * 1.7) * (this.customer.species === 'dog' ? 0.3 : 0.08);
     }
 
+    this.bodyGroup.rotation.x = sitBodyTilt;
+
     if (this.walking) {
-      const swing = Math.sin(t * 9 + this.walkPhase) * 0.5;
-      this.leftLeg.rotation.x = swing;
-      this.rightLeg.rotation.x = -swing;
+      const swing = Math.sin(t * 9 + this.walkPhase) * 0.5 * idle;
+      this.leftLeg.rotation.x = swing + sitLegRot;
+      this.rightLeg.rotation.x = -swing + sitLegRot;
       this.leftArm.rotation.x = -0.12 + -swing * 0.4;
       this.rightArm.rotation.x = -0.12 + swing * 0.4;
     } else {
-      this.leftLeg.rotation.x = 0;
-      this.rightLeg.rotation.x = 0;
-      this.leftArm.rotation.x = -0.12 + Math.sin(t * 1.1) * 0.03;
-      this.rightArm.rotation.x = -0.12 - Math.sin(t * 1.1) * 0.03;
-      this.leftArm.rotation.z = -0.16 + Math.sin(t * 0.9) * 0.01;
-      this.rightArm.rotation.z = 0.16 - Math.sin(t * 0.9) * 0.01;
+      this.leftLeg.rotation.x = sitLegRot;
+      this.rightLeg.rotation.x = sitLegRot;
+      this.leftArm.rotation.x = -0.12 + Math.sin(t * 1.1) * 0.03 * idle;
+      this.rightArm.rotation.x = -0.12 - Math.sin(t * 1.1) * 0.03 * idle;
+      this.leftArm.rotation.z = -0.16 + Math.sin(t * 0.9) * 0.01 * idle;
+      this.rightArm.rotation.z = 0.16 - Math.sin(t * 0.9) * 0.01 * idle;
     }
 
     if (this.shake > 0) {
