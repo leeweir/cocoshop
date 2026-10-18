@@ -736,9 +736,11 @@ export class Chibi {
     const sitTarget = this.sitting ? 1 : 0;
     this.sitT += (sitTarget - this.sitT) * Math.min(1, dt * 5);
     const sit = this.sitT;
-    const sitY = sit * -0.10;
-    const sitLegRot = sit * -1.35;
-    const sitBodyTilt = sit * -0.15;
+    // The seat cushion sits at y≈0.52; lifting the hip onto it means dropping
+    // the root so the torso rests on the chair and the legs hang forward.
+    const sitY = sit * -0.16;
+    const sitLegRot = sit * -1.45;
+    const sitBodyTilt = sit * -0.12;
 
     const idle = 1 - sit;
     const bob = sit > 0.05 ? 0 : Math.sin(t * 2.1 + this.walkPhase) * (this.walking ? 0.015 : 0.012);

@@ -80,7 +80,9 @@ const SEATS = [
 ];
 
 // foreground chair row where customers actually sit
-const CHAIR_Z = 1.95;
+const CHAIR_Z = 2.5;
+// table sits in front of the guest so the camera still sees a full body
+const TABLE_Z = 3.28;
 
 // decorative stools behind the counter (not used for customer seating)
 const BACK_STOOLS = [
@@ -112,9 +114,9 @@ export class CafeScene {
   private mouseParallax = new THREE.Vector2();
   private currentLook = new THREE.Vector3(0, 1.45, -0.8);
   private theme: DayTheme;
-  private ambientLight = new THREE.HemisphereLight(0xffe8dc, 0xe6c2c4, 1.05);
+  private ambientLight = new THREE.HemisphereLight(0xdcecff, 0xe9cdb8, 0.9);
   private sunLight = new THREE.DirectionalLight(0xfff0d2, 1.8);
-  private fillLight = new THREE.DirectionalLight(0xffc0d2, 0.38);
+  private fillLight = new THREE.DirectionalLight(0xcfe4ff, 0.34);
   private bulbLights: THREE.PointLight[] = [];
   private windowTexture: THREE.CanvasTexture;
   private skyCanvas: HTMLCanvasElement;
@@ -156,7 +158,7 @@ export class CafeScene {
     this.renderer.setPixelRatio(Math.min(1.8, window.devicePixelRatio || 1));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
-    this.renderer.toneMappingExposure = 1.06;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.scene.background = new THREE.Color('#f7dfe6');
@@ -183,7 +185,7 @@ export class CafeScene {
     });
     this.composer = new EffectComposer(this.renderer, renderTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.16, 0.5, 0.92);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.11, 0.42, 0.95);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
@@ -218,8 +220,8 @@ export class CafeScene {
       this.cameraBase.set(-0.5, 4.7, 10.5);
       this.lookBase.set(-0.1, 1.6, -0.9);
     } else {
-      this.cameraBase.set(0, 4.4, 9.9);
-      this.lookBase.set(0, 1.42, -0.75);
+      this.cameraBase.set(0, 3.55, 8.0);
+      this.lookBase.set(0, 1.5, 0.25);
     }
   }
 
@@ -276,7 +278,7 @@ export class CafeScene {
       state: 'walking',
       targetX: seatData.x,
       targetZ: CHAIR_Z,
-      faceDir: Math.PI,
+      faceDir: 0,
       leaveTimer: 0,
       mood: 'neutral',
       lastScreen: { x: -999, y: -999, visible: false },
@@ -589,7 +591,7 @@ export class CafeScene {
         chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 4.5);
         c.shadow.position.x = chibi.root.position.x;
         c.shadow.position.z = chibi.root.position.z + 0.15;
-        if (chibi.root.position.x > width * 0.02 + 7.8) {
+        if (chibi.root.position.x > 8.6) {
           this.removeCustomer(id);
           continue;
         }
@@ -840,13 +842,13 @@ export class CafeScene {
     const dusk = theme.id === 'dusk';
     const target = new THREE.Color(theme.ambient);
     this.ambientLight.color.lerp(target, dt * 1.6);
-    this.ambientLight.intensity = THREE.MathUtils.damp(this.ambientLight.intensity, night ? 0.5 : dusk ? 0.62 : 0.68, 2.2, dt);
+    this.ambientLight.intensity = THREE.MathUtils.damp(this.ambientLight.intensity, night ? 0.4 : dusk ? 0.48 : 0.5, 2.2, dt);
     const sunColor = new THREE.Color(theme.sun);
     this.sunLight.color.lerp(sunColor, dt * 1.6);
-    this.sunLight.intensity = THREE.MathUtils.damp(this.sunLight.intensity, night ? 0.7 : dusk ? 2.1 : 2.35, 2, dt);
-    const fillColor = new THREE.Color(theme.accent).lerp(new THREE.Color('#fff4e4'), 0.3);
+    this.sunLight.intensity = THREE.MathUtils.damp(this.sunLight.intensity, night ? 0.7 : dusk ? 2.0 : 2.2, 2, dt);
+    const fillColor = new THREE.Color(theme.accent).lerp(new THREE.Color('#eaf3ff'), 0.72);
     this.fillLight.color.lerp(fillColor, dt * 1.5);
-    this.fillLight.intensity = THREE.MathUtils.damp(this.fillLight.intensity, night ? 1.3 : dusk ? 0.9 : 0.62, 2, dt);
+    this.fillLight.intensity = THREE.MathUtils.damp(this.fillLight.intensity, night ? 1.25 : dusk ? 0.8 : 0.5, 2, dt);
     for (const light of this.bulbLights) {
       light.intensity = THREE.MathUtils.damp(light.intensity, night ? 6.4 : dusk ? 3.6 : 2.2, 2, dt);
     }
@@ -865,6 +867,11 @@ export class CafeScene {
     this.windowTexture.needsUpdate = true;
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.set(theme.fog);
+    }
+    if (!this.scene.fog) {
+      this.scene.fog = new THREE.Fog(theme.fog, 16, 30);
+    } else {
+      (this.scene.fog as THREE.Fog).color.set(theme.fog);
     }
     document.documentElement.style.setProperty('--theme-accent', theme.accent);
     document.documentElement.style.setProperty('--sky-glow', theme.glow);
@@ -912,13 +919,15 @@ export class CafeScene {
         const rand = mulberry(42311);
         const tiles = 6;
         const size = w / tiles;
-        const palette = ['#fff3e7', '#ffe1e9', '#e6f8ef', '#fff0da', '#f6e6f5', '#e2f3f6'];
+        // A creamy terrazzo base with only a few quiet tinted tiles keeps the
+        // floor from competing with the counter and guests.
+        const palette = ['#fdf2e4', '#fbe9e2', '#f4efe4', '#f9ecec', '#eef2e6', '#fdf2e4'];
         for (let row = 0; row < tiles; row++) {
           for (let col = 0; col < tiles; col++) {
             ctx.fillStyle = palette[(row + col * 2 + (row % 2)) % palette.length];
             ctx.fillRect(col * size, row * size, size, size);
             // terrazzo chips
-            const chips = ['rgba(255,154,185,0.5)', 'rgba(126,209,178,0.5)', 'rgba(255,206,120,0.55)', 'rgba(174,150,222,0.42)', 'rgba(255,255,255,0.75)'];
+            const chips = ['rgba(240,164,182,0.34)', 'rgba(126,201,172,0.34)', 'rgba(240,196,124,0.36)', 'rgba(174,150,222,0.24)', 'rgba(255,255,255,0.6)'];
             for (let i = 0; i < 22; i++) {
               ctx.fillStyle = chips[Math.floor(rand() * chips.length)];
               const x = col * size + 8 + rand() * (size - 16);
@@ -1028,7 +1037,7 @@ export class CafeScene {
   }
 
   private buildWalls() {
-    const wallMat = standard('#fff1e8', { roughness: 0.95 });
+    const wallMat = standard('#ffe4cf', { roughness: 0.95 });
     // segmented wall so the two arched windows are real openings onto the sky
     const sections: [number, number, number, number][] = [
       // [centerX, centerY, width, height]
@@ -1048,7 +1057,7 @@ export class CafeScene {
     }
 
     // wainscot
-    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#a6e0ca', { roughness: 0.9 }));
+    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#79cbb0', { roughness: 0.9 }));
     wainscot.position.set(0, 0.55, -5.22);
     wainscot.receiveShadow = true;
     this.scene.add(wainscot);
@@ -1091,7 +1100,7 @@ export class CafeScene {
   }
 
   private buildShelfTower(x: number) {
-    const cabinet = new THREE.Mesh(new RoundedBoxGeometry(1.5, 3.0, 0.55, 4, 0.12), standard('#ffe6de', { roughness: 0.8 }));
+      const cabinet = new THREE.Mesh(new RoundedBoxGeometry(1.5, 3.0, 0.55, 4, 0.12), standard('#f7d6c4', { roughness: 0.8 }));
     cabinet.position.set(x, 1.65, -5.0);
     cabinet.castShadow = true;
     cabinet.receiveShadow = true;
@@ -1828,8 +1837,8 @@ export class CafeScene {
     // fluted front
     for (let i = 0; i < 27; i++) {
       const material = i % 9 === 4 ? pink : i % 3 === 0 ? cream : i % 2 === 0 ? dark : green;
-      const flute = new THREE.Mesh(new THREE.CylinderGeometry(0.056, 0.056, 0.78, 12), material);
-      flute.position.set(-4.16 + i * 0.32, 0.55, 1.785);
+      const flute = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.78, 14), material);
+      flute.position.set(-4.16 + i * 0.32, 0.55, 1.76);
       flute.receiveShadow = true;
       this.scene.add(flute);
     }
@@ -2176,8 +2185,12 @@ export class CafeScene {
 
     // foreground tables and chairs where customers sit
     const tableColors = ['#ffd6e4', '#c9f2e3', '#fff0c9'];
+    // Tables sit to the side of each guest so the camera sees a full body
+    // instead of a head peeking over a tabletop.
+    const tableOffsets = [-1.24, 1.24, 1.24];
     for (let i = 0; i < 3; i++) {
       const x = SEATS[i].x;
+      const tx = x + tableOffsets[i];
       const tableColor = tableColors[i];
       const table = new THREE.Group();
       const top = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.5, 0.06, 32), standard(tableColor, { roughness: 0.5 }));
@@ -2188,14 +2201,13 @@ export class CafeScene {
       const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.05, 24), standard('#e8c9a8', { roughness: 0.45 }));
       base.position.y = 0.025;
       table.add(top, column, base);
-      table.position.set(x, 0, 2.55);
+      table.position.set(tx, 0, TABLE_Z);
       this.scene.add(table);
-      this.addContactShadow(x, 2.55, 1.05, 1.05, 0.18);
+      this.addContactShadow(tx, TABLE_Z, 1.05, 1.05, 0.18);
 
-      // customer chair facing the counter
+      // customer chair: guest faces the camera, so the backrest faces the counter
       const chair = this.makeChair(seatColors[i]);
       chair.position.set(x, 0, CHAIR_Z);
-      chair.rotation.y = Math.PI;
       this.scene.add(chair);
       this.addContactShadow(x, CHAIR_Z, 0.62, 0.62, 0.16);
 
@@ -2205,7 +2217,7 @@ export class CafeScene {
         new THREE.MeshStandardMaterial({ color: tableColor, transparent: true, opacity: 0.35, roughness: 1 }),
       );
       rug.rotation.x = -Math.PI / 2;
-      rug.position.set(x, 0.008, 2.55);
+      rug.position.set(tx, 0.008, TABLE_Z);
       rug.receiveShadow = true;
       this.scene.add(rug);
     }

@@ -5,7 +5,8 @@ let skinGradient: THREE.DataTexture | null = null;
 
 export function toonGradient(): THREE.DataTexture {
   if (gradient) return gradient;
-  const data = new Uint8Array([38, 112, 196, 255]);
+  // Four-step ramp with a wide shadow band so form reads under a bright key.
+  const data = new Uint8Array([46, 96, 158, 224, 255]);
   const tex = new THREE.DataTexture(data, 4, 1, THREE.RedFormat);
   tex.minFilter = THREE.NearestFilter;
   tex.magFilter = THREE.NearestFilter;

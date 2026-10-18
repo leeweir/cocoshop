@@ -285,7 +285,9 @@ export class Game {
 
     this.scene.tick(dt);
     if (this.screen === 'playing' && this.player) {
-      if (this.dayActive && !this.overlay) this.simulate(dt);
+      // Spawning pauses behind overlays, but the shift clock and guest
+      // patience keep ticking so opening the notebook isn't a free pause.
+      if (this.dayActive) this.simulate(dt, this.overlay === null);
       if (this.overlay === 'craft' && this.craft?.step === 'shake' && this.craft.shake && !this.craft.shake.done) {
         this.updateShake(dt);
       }
@@ -325,17 +327,19 @@ export class Game {
     this.raf = requestAnimationFrame(this.loop);
   };
 
-  private simulate(dt: number) {
+  private simulate(dt: number, canSpawn: boolean) {
     const p = this.player;
     if (!p || !this.dayActive) return;
 
+    // The clock keeps running beneath overlays, but never yanks the player out
+    // of a drink they are mid-way through crafting.
     p.shiftLeft = Math.max(0, p.shiftLeft - dt);
-    if (p.shiftLeft <= 0) {
+    if (p.shiftLeft <= 0 && this.overlay !== 'craft') {
       this.endDay('time');
       return;
     }
 
-    if (this.storeOpen) {
+    if (canSpawn && this.storeOpen) {
       this.spawnTimer -= dt;
       if (this.spawnTimer <= 0) {
         const spawned = this.trySpawn();
@@ -521,6 +525,7 @@ export class Game {
     this.deliveryTimer = this.config.deliveryEvery > 0 ? Math.max(8, this.config.deliveryEvery * 0.55) : 0;
     this.orderSeq = 0;
     this.screen = 'playing';
+    this.save.openShiftDay = this.config.day;
     this.scene.setDay(this.config.day, this.config.theme, this.config.unlockedDrinkIds);
     this.scene.setUpgrades(this.save.upgrades);
     this.scene.setCameraMode('play');
@@ -570,6 +575,7 @@ export class Game {
     this.save.bestCombo = Math.max(this.save.bestCombo, p.maxComboToday);
     // Advance the save immediately so refreshing the summary cannot replay this shift.
     this.save.pendingShopDay = this.config.day;
+    this.save.openShiftDay = undefined;
     this.save.day = Math.min(999, this.config.day + 1);
     this.save.city.supplies = [];
     this.ensureEvening();
@@ -1634,15 +1640,15 @@ export class Game {
     if (this.overlay !== 'chat') return;
     const id = this.chat?.orderId;
     this.chat = null;
-    if (!id) {
-      this.overlay = null;
+    this.overlay = null;
+    if (id) this.startCraft(id, true);
+    // startCraft can bail (order gone, guest left); never leave the chat layer
+    // on screen with no overlay owning it.
+    if (this.overlay !== 'craft') {
       this.scene.setInteractive(true);
       this.ui.setOverlayActive(false);
       this.ui.clearScreen();
-      return;
     }
-    this.overlay = null;
-    this.startCraft(id, true);
   }
 
   private startCraft(id: string, fromSlip = false) {
@@ -2283,14 +2289,31 @@ export class Game {
       void this.ui
         .confirm({
           title: '回到标题画面？',
-          text: '今天的营业会提前结束，但已经赚到的金币和小店升级都会保留。',
-          confirmLabel: '回到标题',
+          text: '今天的营业会提前结束，已经赚到的金币会保留，但这一天不会重来。',
+          confirmLabel: '结束营业并回标题',
         })
         .then((yes) => {
-          if (yes) this.returnToTitle();
+          if (yes) this.abandonShift();
         });
       return;
     }
+    this.returnToTitle();
+  }
+
+  /**
+   * Leaving a running shift early still consumes the day. Coins earned are
+   * already banked, so without this the player could replay day 1 forever.
+   */
+  private abandonShift() {
+    const p = this.player;
+    this.save.pendingShopDay = this.config.day;
+    this.save.openShiftDay = undefined;
+    this.save.day = Math.min(999, this.config.day + 1);
+    this.save.bestRevenue = Math.max(this.save.bestRevenue, Math.round(p?.revenue ?? 0));
+    this.save.bestCombo = Math.max(this.save.bestCombo, p?.maxComboToday ?? 0);
+    this.save.city.supplies = [];
+    this.ensureEvening();
+    persistSave(this.save);
     this.returnToTitle();
   }
 

@@ -69,7 +69,15 @@ export function loadSave(): SaveData {
     const pendingRaw = clampInt(data.pendingShopDay, 0, 999, 0);
     const pendingShopDay = pendingRaw > 0 ? pendingRaw : undefined;
     const day = clampInt(data.day, 1, 999, 1);
-    const upcomingDay = pendingShopDay ? Math.min(999, Math.max(day, pendingShopDay + 1)) : day;
+    let upcomingDay = pendingShopDay ? Math.min(999, Math.max(day, pendingShopDay + 1)) : day;
+    // A shift that was open when the page closed never finished. Bank it as
+    // consumed so reloading cannot replay the same day for free coins.
+    const openShiftRaw = clampInt(data.openShiftDay, 0, 999, 0);
+    let recoveredShopDay = pendingShopDay;
+    if (openShiftRaw > 0 && openShiftRaw === upcomingDay) {
+      recoveredShopDay = Math.max(pendingShopDay ?? 0, openShiftRaw);
+      upcomingDay = Math.min(999, openShiftRaw + 1);
+    }
 
     const rawCity = (data.city ?? {}) as Partial<CitySave>;
     const validSupplyIds = new Set<string>(SUPPLIES.map((supply) => supply.id));
@@ -119,7 +127,8 @@ export function loadSave(): SaveData {
     return {
       version: 3,
       day: upcomingDay,
-      pendingShopDay,
+      pendingShopDay: recoveredShopDay,
+      openShiftDay: openShiftRaw > 0 && openShiftRaw === pendingShopDay ? openShiftRaw : undefined,
       city,
       travel: { chapters },
       coins: clampInt(data.coins, 0, 9_999_999, 0),

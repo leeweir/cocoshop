@@ -154,6 +154,8 @@ export interface SaveData {
   day: number;
   /** The shift just completed whose post-shift shop has not been left yet. */
   pendingShopDay?: number;
+  /** Day whose shift was running when the page was last unloaded. */
+  openShiftDay?: number;
   coins: number;
   totalCoinsEarned: number;
   bestRevenue: number;

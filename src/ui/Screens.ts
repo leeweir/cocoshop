@@ -919,8 +919,11 @@ export class Screens {
       if (time) time.textContent = `${Math.ceil(view.order.patience)}s`;
       entry.el.classList.toggle('is-urgent', ratio < 0.3);
 
+      // On phones three bubbles would sit shoulder to shoulder and cover the
+      // guests, so stagger alternating tickets upward.
+      const stagger = narrow ? (orders.indexOf(view) % 2) * -78 : 0;
       const x = narrow ? Math.max(64, Math.min(window.innerWidth - 64, anchor.x)) : anchor.x;
-      entry.el.style.transform = `translate(${x}px, ${anchor.y}px) translate(-50%, calc(-100% - 12px))`;
+      entry.el.style.transform = `translate(${x}px, ${anchor.y + stagger}px) translate(-50%, calc(-100% - 12px))`;
       entry.el.classList.toggle('is-visible', anchor.visible);
       entry.el.setAttribute(
         'aria-label',
@@ -2671,7 +2674,7 @@ export class Screens {
                 <b>${mini.taps} / ${mini.tapsNeeded} ${chapter.timing.unit}</b>
               </div>
               <div class="timing-track">
-                <span class="timing-zone" style="left:${50 - (mini.zone * 100) / 2}%;width:${mini.zone * 100}%"></span>
+                <span class="timing-zone" style="left:${50 - mini.zone * 100}%;width:${mini.zone * 200}%"></span>
                 <span class="timing-center"></span>
                 <span class="timing-pointer" data-travel-pointer></span>
               </div>
