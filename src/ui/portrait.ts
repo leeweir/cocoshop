@@ -195,10 +195,10 @@ function drawBackHair(ctx: CanvasRenderingContext2D, c: CustomerDef) {
       curveShape(ctx, () => {
         ctx.beginPath();
         ctx.moveTo(62, 118);
-        ctx.bezierCurveTo(49, 187, 65, 226, 83, 246);
-        ctx.lineTo(173, 246);
-        ctx.bezierCurveTo(191, 226, 207, 187, 194, 118);
-        ctx.bezierCurveTo(186, 58, 70, 58, 62, 118);
+        ctx.bezierCurveTo(52, 172, 62, 206, 80, 222);
+        ctx.lineTo(176, 222);
+        ctx.bezierCurveTo(194, 206, 204, 172, 194, 118);
+        ctx.bezierCurveTo(188, 30, 68, 30, 62, 118);
         ctx.closePath();
       }, hairShade, true, 3);
       ctx.strokeStyle = mixHex(hairShade, '#ffffff', 0.42);
@@ -216,7 +216,7 @@ function drawBackHair(ctx: CanvasRenderingContext2D, c: CustomerDef) {
       curveShape(ctx, () => {
         ctx.beginPath();
         ctx.moveTo(64, 120);
-        ctx.bezierCurveTo(58, 62, 198, 62, 192, 120);
+        ctx.bezierCurveTo(58, 32, 198, 32, 192, 120);
         ctx.lineTo(186, 174);
         ctx.bezierCurveTo(169, 190, 87, 190, 70, 174);
         ctx.closePath();
@@ -236,22 +236,28 @@ function drawBackHair(ctx: CanvasRenderingContext2D, c: CustomerDef) {
       curveShape(ctx, () => {
         ctx.beginPath();
         ctx.moveTo(64, 116);
-        ctx.bezierCurveTo(58, 62, 198, 62, 192, 116);
-        ctx.lineTo(184, 172);
-        ctx.lineTo(72, 172);
+        ctx.bezierCurveTo(58, 32, 198, 32, 192, 116);
+        ctx.lineTo(184, 160);
+        ctx.lineTo(72, 160);
         ctx.closePath();
       }, hairShade, true, 3);
       for (const s of [-1, 1] as const) {
         ctx.save();
-        ctx.translate(128 + s * 75, 150);
-        ctx.rotate(s * 0.15);
-        ell(ctx, 0, 25, 26, 51, hair, true, 2.8);
-        ell(ctx, -s * 4, 34, 12, 32, hairShade);
-        ctx.strokeStyle = mixHex(hair, '#ffffff', 0.62);
-        ctx.globalAlpha = 0.5;
-        ctx.lineWidth = 3.4;
+        ctx.translate(128 + s * 66, 112);
+        ctx.rotate(s * 0.12);
+        curveShape(ctx, () => {
+          ctx.beginPath();
+          ctx.moveTo(-10, 0);
+          ctx.bezierCurveTo(-22, 30, -18, 66, s * 6, 92);
+          ctx.bezierCurveTo(14, 70, 18, 30, 10, 0);
+          ctx.closePath();
+        }, hair, true, 2.6);
+        ctx.strokeStyle = mixHex(hair, '#ffffff', 0.6);
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 2.4;
         ctx.beginPath();
-        ctx.ellipse(s * 7, 30, 15, 36, -s * 0.18, Math.PI * 1.08, Math.PI * 1.62);
+        ctx.moveTo(-4 * s, 14);
+        ctx.quadraticCurveTo(-10 * s, 46, -2 * s, 74);
         ctx.stroke();
         ctx.globalAlpha = 1;
         ctx.restore();
@@ -262,7 +268,7 @@ function drawBackHair(ctx: CanvasRenderingContext2D, c: CustomerDef) {
       curveShape(ctx, () => {
         ctx.beginPath();
         ctx.moveTo(66, 116);
-        ctx.bezierCurveTo(61, 63, 195, 63, 190, 116);
+        ctx.bezierCurveTo(61, 33, 195, 33, 190, 116);
         ctx.lineTo(184, 150);
         ctx.lineTo(72, 150);
         ctx.closePath();
@@ -285,21 +291,27 @@ function drawBackHair(ctx: CanvasRenderingContext2D, c: CustomerDef) {
       curveShape(ctx, () => {
         ctx.beginPath();
         ctx.moveTo(64, 118);
-        ctx.bezierCurveTo(59, 64, 197, 64, 192, 118);
+        ctx.bezierCurveTo(59, 33, 197, 33, 192, 118);
         ctx.lineTo(184, 158);
         ctx.lineTo(72, 158);
         ctx.closePath();
       }, hairShade, true, 3);
       ctx.save();
-      ctx.translate(197, 118);
-      ctx.rotate(-0.5);
-      ell(ctx, 0, 46, 25, 54, hair, true, 2.8);
-      ell(ctx, 7, 52, 11, 33, hairShade);
+      ctx.translate(182, 96);
+      ctx.rotate(-0.32);
+      curveShape(ctx, () => {
+        ctx.beginPath();
+        ctx.moveTo(-9, 0);
+        ctx.bezierCurveTo(-4, 34, 10, 70, 22, 96);
+        ctx.bezierCurveTo(30, 66, 24, 26, 11, 0);
+        ctx.closePath();
+      }, hair, true, 2.6);
       ctx.strokeStyle = mixHex(hair, '#ffffff', 0.6);
       ctx.globalAlpha = 0.55;
-      ctx.lineWidth = 3.4;
+      ctx.lineWidth = 2.4;
       ctx.beginPath();
-      ctx.ellipse(0, 44, 15, 38, 0.1, Math.PI * 1.05, Math.PI * 1.58);
+      ctx.moveTo(2, 14);
+      ctx.quadraticCurveTo(10, 50, 20, 80);
       ctx.stroke();
       ctx.globalAlpha = 1;
       ctx.restore();
@@ -315,7 +327,7 @@ function drawBangs(ctx: CanvasRenderingContext2D, c: CustomerDef) {
   const bangs = () => {
     ctx.beginPath();
     ctx.moveTo(68, 124);
-    ctx.bezierCurveTo(56, 58, 198, 54, 188, 124);
+    ctx.bezierCurveTo(56, 34, 198, 30, 188, 124);
     ctx.lineTo(171, 92);
     ctx.bezierCurveTo(166, 110, 157, 113, 150, 98);
     ctx.bezierCurveTo(143, 119, 133, 124, 126, 103);
@@ -853,6 +865,7 @@ function drawPortraitBase(ctx: CanvasRenderingContext2D, c: CustomerDef, express
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
+  drawBackHair(ctx, c);
   drawCoat(ctx, c);
 
   // neck
@@ -860,8 +873,6 @@ function drawPortraitBase(ctx: CanvasRenderingContext2D, c: CustomerDef, express
   ctx.globalAlpha = 0.25;
   ell(ctx, 128, 158, 15, 8, '#d69786');
   ctx.globalAlpha = 1;
-
-  drawBackHair(ctx, c);
 
   // ears behind head
   drawEar(ctx, c, -1);
@@ -910,8 +921,15 @@ function drawPortraitBase(ctx: CanvasRenderingContext2D, c: CustomerDef, express
 
   // side locks with a glossy inner edge
   ctx.save();
-  path(ctx, [[78, 98], [69, 148], [82, 174], [90, 158], [83, 120]], c.colors.hair, true, true, 2.4);
-  path(ctx, [[178, 98], [187, 148], [174, 174], [166, 158], [173, 120]], c.colors.hair, true, true, 2.4);
+  for (const s of [-1, 1] as const) {
+    curveShape(ctx, () => {
+      ctx.beginPath();
+      ctx.moveTo(128 + s * 50, 96);
+      ctx.bezierCurveTo(128 + s * 62, 122, 128 + s * 60, 152, 128 + s * 48, 172);
+      ctx.quadraticCurveTo(128 + s * 44, 150, 128 + s * 42, 118);
+      ctx.closePath();
+    }, c.colors.hair, true, 2.4);
+  }
   ctx.strokeStyle = mixHex(c.colors.hair, '#ffffff', 0.55);
   ctx.globalAlpha = 0.5;
   ctx.lineWidth = 2;
@@ -926,21 +944,6 @@ function drawPortraitBase(ctx: CanvasRenderingContext2D, c: CustomerDef, express
 
   drawAccessory(ctx, c);
 
-  // tiny sparkle
-  ctx.globalAlpha = 0.8;
-  ctx.fillStyle = '#fff7d8';
-  ctx.beginPath();
-  ctx.moveTo(38, 52);
-  ctx.lineTo(41, 62);
-  ctx.lineTo(51, 65);
-  ctx.lineTo(41, 68);
-  ctx.lineTo(38, 78);
-  ctx.lineTo(35, 68);
-  ctx.lineTo(25, 65);
-  ctx.lineTo(35, 62);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
 }
 
 const portraitCache = new Map<string, string>();

@@ -30,8 +30,8 @@ interface SceneCustomer {
   chibi: Chibi;
   seat: number;
   state: CustomerVisualState;
-  targetX: number;
-  targetZ: number;
+  /** Remaining waypoints; guests walk the aisle, never through furniture. */
+  path: { x: number; z: number }[];
   faceDir: number;
   leaveTimer: number;
   mood: 'neutral' | 'worried' | 'sad';
@@ -83,12 +83,17 @@ const SEATS = [
 const CHAIR_Z = 2.5;
 // table sits in front of the guest so the camera still sees a full body
 const TABLE_Z = 3.28;
+// tables stand beside each chair rather than blocking the guest
+const TABLE_OFFSETS = [-1.24, 1.24, 1.24];
+// open aisle in front of the tables that guests walk along
+const AISLE_Z = 4.4;
+const EXIT_X = 8.6;
 
 // decorative stools behind the counter (not used for customer seating)
 const BACK_STOOLS = [
-  { x: -2.35, z: -4.02 },
-  { x: 0, z: -4.02 },
-  { x: 2.35, z: -4.02 },
+  { x: -2.35, z: -3.86 },
+  { x: 0, z: -3.86 },
+  { x: 2.35, z: -3.86 },
 ];
 
 const SKY_W = 900;
@@ -259,9 +264,9 @@ export class CafeScene {
   spawnCustomer(orderId: string, customer: CustomerDef, seat: number, vip = false) {
     const seatData = SEATS[seat];
     const chibi = new Chibi(customer, vip);
-    const startX = seatData.x + 5.4;
-    chibi.root.position.set(startX, 0, CHAIR_Z);
-    chibi.root.rotation.y = 0;
+    const startX = EXIT_X;
+    chibi.root.position.set(startX, 0, AISLE_Z);
+    chibi.root.rotation.y = -Math.PI / 2;
     chibi.setWalking(true);
     this.scene.add(chibi.root);
     const shadow = new THREE.Mesh(
@@ -269,16 +274,18 @@ export class CafeScene {
       new THREE.MeshBasicMaterial({ map: this.softShadowTexture, transparent: true, depthWrite: false, opacity: 0.82 }),
     );
     shadow.rotation.x = -Math.PI / 2;
-    shadow.position.set(startX, 0.008, CHAIR_Z + 0.15);
+    shadow.position.set(startX, 0.008, AISLE_Z + 0.15);
     this.scene.add(shadow);
     this.customers.set(orderId, {
       orderId,
       chibi,
       seat,
       state: 'walking',
-      targetX: seatData.x,
-      targetZ: CHAIR_Z,
-      faceDir: 0,
+      path: [
+        { x: seatData.x, z: AISLE_Z },
+        { x: seatData.x, z: CHAIR_Z },
+      ],
+      faceDir: -Math.PI / 2,
       leaveTimer: 0,
       mood: 'neutral',
       lastScreen: { x: -999, y: -999, visible: false },
@@ -314,7 +321,7 @@ export class CafeScene {
       if (o instanceof THREE.Mesh) o.castShadow = false;
     });
     this.scene.add(cup.group);
-    const end = new THREE.Vector3(SEATS[c.seat].x, 0.95, 2.35);
+    const end = new THREE.Vector3(SEATS[c.seat].x + TABLE_OFFSETS[c.seat], 0.98, TABLE_Z);
     this.flights.push({
       group: cup.group,
       start: cup.group.position.clone(),
@@ -325,24 +332,18 @@ export class CafeScene {
       orderId,
     });
     // tinted sparkle trail will follow in update
-    if (drink) this.spawnMiniHearts(SEATS[c.seat].x, 1.35, 2.35, 4, 0.55);
+    if (drink) this.spawnMiniHearts(SEATS[c.seat].x, 1.35, CHAIR_Z + 0.3, 4, 0.55);
   }
 
   sendCustomerAway(orderId: string, angry: boolean) {
     const c = this.customers.get(orderId);
     if (!c) return;
-    const seatData = SEATS[c.seat];
     if (angry) {
       c.state = 'angry';
       c.chibi.sulk();
       c.leaveTimer = 0;
     } else {
-      c.state = 'leaving';
-      c.targetX = 8.5;
-      c.targetZ = CHAIR_Z;
-      c.faceDir = 0;
-      c.chibi.setSitting(false);
-      c.chibi.setWalking(true);
+      this.startLeaving(c);
       c.chibi.setMood('neutral');
     }
   }
@@ -534,29 +535,55 @@ export class CafeScene {
 
   // ───────────────────────────── customer updates
 
+  private startLeaving(c: SceneCustomer) {
+    c.state = 'leaving';
+    const here = c.chibi.root.position;
+    c.path = [
+      { x: here.x, z: AISLE_Z },
+      { x: EXIT_X, z: AISLE_Z },
+    ];
+    c.chibi.setSitting(false);
+    c.chibi.setWalking(true);
+  }
+
+  /** Walks one step along the waypoint path; returns true once it is empty. */
+  private stepPath(c: SceneCustomer, dt: number, speed: number): boolean {
+    const pos = c.chibi.root.position;
+    let budget = dt * speed;
+    while (c.path.length && budget > 0) {
+      const wp = c.path[0];
+      const dx = wp.x - pos.x;
+      const dz = wp.z - pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 1e-3) {
+        c.path.shift();
+        continue;
+      }
+      c.faceDir = Math.atan2(dx, dz);
+      const step = Math.min(dist, budget);
+      pos.x += (dx / dist) * step;
+      pos.z += (dz / dist) * step;
+      budget -= step;
+      if (step >= dist) c.path.shift();
+    }
+    // shortest-arc turn toward the heading
+    let rotDiff = c.faceDir - c.chibi.root.rotation.y;
+    rotDiff = Math.atan2(Math.sin(rotDiff), Math.cos(rotDiff));
+    c.chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 7);
+    c.shadow.position.x = pos.x;
+    c.shadow.position.z = pos.z + 0.15;
+    return c.path.length === 0;
+  }
+
   private updateCustomers(dt: number) {
-    const width = window.innerWidth;
-    const v = new THREE.Vector3();
     for (const [id, c] of [...this.customers]) {
       c.chibi.update(dt, this.clockTime);
       const chibi = c.chibi;
-      const seatData = SEATS[c.seat];
       if (c.state === 'walking') {
-        const dx = c.targetX - chibi.root.position.x;
-        const dz = c.targetZ - chibi.root.position.z;
-        const xStep = Math.sign(dx) * Math.min(Math.abs(dx), dt * 2.2);
-        const zStep = Math.sign(dz) * Math.min(Math.abs(dz), dt * 2.2);
-        chibi.root.position.x += xStep;
-        chibi.root.position.z += zStep;
-        c.shadow.position.x = chibi.root.position.x;
-        c.shadow.position.z = chibi.root.position.z + 0.15;
-        // turn toward the seat as we approach
-        const rotDiff = c.faceDir - chibi.root.rotation.y;
-        chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 4.5);
-        if (Math.abs(dx) < 0.06 && Math.abs(dz) < 0.06) {
-          chibi.root.position.x = c.targetX;
-          chibi.root.position.z = c.targetZ;
-          chibi.root.rotation.y = c.faceDir;
+        if (this.stepPath(c, dt, 2.2)) {
+          // turn around to face the room before sitting down
+          chibi.root.rotation.y = 0;
+          c.faceDir = 0;
           c.state = 'waiting';
           chibi.setWalking(false);
           chibi.setSitting(true);
@@ -564,48 +591,16 @@ export class CafeScene {
         }
       } else if (c.state === 'served') {
         c.leaveTimer += dt;
-        if (c.leaveTimer > 1.9) {
-          c.state = 'leaving';
-          c.targetX = 8.5;
-          c.targetZ = CHAIR_Z;
-          c.faceDir = 0;
-          chibi.setSitting(false);
-          chibi.setWalking(true);
-        }
+        if (c.leaveTimer > 1.9) this.startLeaving(c);
       } else if (c.state === 'angry') {
         c.leaveTimer += dt;
-        if (c.leaveTimer > 1.15) {
-          c.state = 'leaving';
-          c.targetX = 8.5;
-          c.targetZ = CHAIR_Z;
-          c.faceDir = 0;
-          chibi.setSitting(false);
-          chibi.setWalking(true);
-        }
+        if (c.leaveTimer > 1.15) this.startLeaving(c);
       } else if (c.state === 'leaving') {
-        const dx = c.targetX - chibi.root.position.x;
-        const dz = c.targetZ - chibi.root.position.z;
-        chibi.root.position.x += Math.sign(dx) * Math.min(Math.abs(dx), dt * 2.4);
-        chibi.root.position.z += Math.sign(dz) * Math.min(Math.abs(dz), dt * 2.4);
-        const rotDiff = c.faceDir - chibi.root.rotation.y;
-        chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 4.5);
-        c.shadow.position.x = chibi.root.position.x;
-        c.shadow.position.z = chibi.root.position.z + 0.15;
-        if (chibi.root.position.x > 8.6) {
+        if (this.stepPath(c, dt, 2.4)) {
           this.removeCustomer(id);
           continue;
         }
       }
-
-      // keep seated guests planted at their chairs
-      if (c.state === 'waiting') {
-        c.shadow.position.x = chibi.root.position.x;
-        c.shadow.position.z = chibi.root.position.z + 0.15;
-      }
-
-      // heart anchors
-      chibi.getHeadAnchor(v);
-      v.project(this.camera);
     }
   }
 
@@ -685,7 +680,7 @@ export class CafeScene {
           if (f.orderId) {
             const c = this.customers.get(f.orderId);
             if (c) {
-              this.spawnMiniHearts(SEATS[c.seat].x, 1.6, CHAIR_Z, 8, 1);
+              this.spawnMiniHearts(SEATS[c.seat].x, 1.6, CHAIR_Z + 0.3, 8, 1);
             }
           }
           disposeCup(f.group as unknown as THREE.Group);
@@ -1200,8 +1195,9 @@ export class CafeScene {
     sill.position.set(x, y - h / 2 - 0.02, -4.98);
     sill.castShadow = true;
     this.scene.add(sill);
-    this.makeWindowsillPlant(x - 1.05, y - h / 2 + 0.08, -4.78, 0.7);
-    this.makeWindowsillPlant(x + 0.98, y - h / 2 + 0.08, -4.78, 0.85);
+    // pots rest exactly on the sill top (center - 0.02 + half height 0.065)
+    this.makeWindowsillPlant(x - 1.05, y - h / 2 + 0.045, -4.86, 0.7);
+    this.makeWindowsillPlant(x + 0.98, y - h / 2 + 0.045, -4.86, 0.85);
 
     // curtains
     const curtainMat = standard('#e7f9f2', { roughness: 0.95 });
@@ -2187,10 +2183,9 @@ export class CafeScene {
     const tableColors = ['#ffd6e4', '#c9f2e3', '#fff0c9'];
     // Tables sit to the side of each guest so the camera sees a full body
     // instead of a head peeking over a tabletop.
-    const tableOffsets = [-1.24, 1.24, 1.24];
     for (let i = 0; i < 3; i++) {
       const x = SEATS[i].x;
-      const tx = x + tableOffsets[i];
+      const tx = x + TABLE_OFFSETS[i];
       const tableColor = tableColors[i];
       const table = new THREE.Group();
       const top = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.5, 0.06, 32), standard(tableColor, { roughness: 0.5 }));
@@ -2261,14 +2256,16 @@ export class CafeScene {
   private makeChair(seatColor: string): THREE.Group {
     const group = new THREE.Group();
     const wood = standard('#d8ae82', { roughness: 0.5 });
-    const seat = new THREE.Mesh(new RoundedBoxGeometry(0.52, 0.09, 0.48, 4, 0.05), standard(seatColor, { roughness: 0.65 }));
-    seat.position.y = 0.48;
+    // Seat runs deeper toward the counter so the backrest clears a seated
+    // guest's torso and skirt.
+    const seat = new THREE.Mesh(new RoundedBoxGeometry(0.56, 0.09, 0.6, 4, 0.05), standard(seatColor, { roughness: 0.65 }));
+    seat.position.set(0, 0.48, -0.06);
     seat.castShadow = true;
-    const back = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.42, 0.08, 4, 0.04), standard(seatColor, { roughness: 0.65 }));
-    back.position.set(0, 0.75, -0.22);
+    const back = new THREE.Mesh(new RoundedBoxGeometry(0.54, 0.42, 0.07, 4, 0.03), standard(seatColor, { roughness: 0.65 }));
+    back.position.set(0, 0.78, -0.37);
     back.castShadow = true;
     const legGeo = new THREE.CylinderGeometry(0.035, 0.03, 0.46, 10);
-    for (const [lx, lz] of [[-0.2, 0.18], [0.2, 0.18], [-0.2, -0.18], [0.2, -0.18]] as const) {
+    for (const [lx, lz] of [[-0.22, 0.17], [0.22, 0.17], [-0.22, -0.3], [0.22, -0.3]] as const) {
       const leg = new THREE.Mesh(legGeo, wood);
       leg.position.set(lx, 0.23, lz);
       leg.castShadow = true;
@@ -2661,6 +2658,23 @@ export class CafeScene {
     pot.rotation.x = Math.PI;
     pot.position.y = -0.08;
     group.add(pot);
+    // three cords gather into a hook on the ceiling so the pot doesn't float
+    const cordMat = standard('#c9a88a', { roughness: 0.9 });
+    const ceiling = 6.0 - y;
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2;
+      const from = new THREE.Vector3(Math.cos(a) * 0.17, 0.04, Math.sin(a) * 0.17);
+      const to = new THREE.Vector3(0, 0.5, 0);
+      const len = from.distanceTo(to);
+      const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, len, 4), cordMat);
+      cord.position.copy(from).lerp(to, 0.5);
+      cord.lookAt(to);
+      cord.rotateX(Math.PI / 2);
+      group.add(cord);
+    }
+    const drop = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, ceiling - 0.5, 4), cordMat);
+    drop.position.y = 0.5 + (ceiling - 0.5) / 2;
+    group.add(drop);
     const rand = mulberry(Math.floor(x * 44) + 7);
     for (let i = 0; i < 7; i++) {
       const a = rand() * Math.PI * 2;

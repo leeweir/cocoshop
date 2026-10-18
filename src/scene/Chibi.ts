@@ -39,6 +39,7 @@ export class Chibi {
   private rightArm!: THREE.Mesh;
   private leftLeg!: THREE.Mesh;
   private rightLeg!: THREE.Mesh;
+  private shoes: THREE.Mesh[] = [];
   private tail?: THREE.Group;
   private mood: Mood = 'neutral';
   private blinkIn = 2 + Math.random() * 3;
@@ -142,6 +143,7 @@ export class Chibi {
       shoe.scale.set(1, 0.72, 1.35);
       shoe.position.set(s * 0.14, 0.075, 0.045);
       shoe.castShadow = true;
+      this.shoes.push(shoe);
       this.bodyGroup.add(shoe);
     }
 
@@ -736,11 +738,21 @@ export class Chibi {
     const sitTarget = this.sitting ? 1 : 0;
     this.sitT += (sitTarget - this.sitT) * Math.min(1, dt * 5);
     const sit = this.sitT;
-    // The seat cushion sits at y≈0.52; lifting the hip onto it means dropping
-    // the root so the torso rests on the chair and the legs hang forward.
-    const sitY = sit * -0.16;
-    const sitLegRot = sit * -1.45;
-    const sitBodyTilt = sit * -0.12;
+    // The seat cushion top is at y≈0.53. Lift the body so the hem rests on it
+    // and swing the legs forward over the seat edge instead of through it.
+    const sitY = sit * 0.16;
+    const sitLegRot = sit * -Math.PI / 2;
+    const sitBodyTilt = sit * -0.06;
+    const legY = 0.29 + sit * 0.17;
+    const legZ = sit * 0.2;
+    this.leftLeg.position.y = legY;
+    this.rightLeg.position.y = legY;
+    this.leftLeg.position.z = legZ;
+    this.rightLeg.position.z = legZ;
+    for (const shoe of this.shoes) {
+      shoe.position.y = 0.075 + sit * 0.385;
+      shoe.position.z = 0.045 + sit * 0.4;
+    }
 
     const idle = 1 - sit;
     const bob = sit > 0.05 ? 0 : Math.sin(t * 2.1 + this.walkPhase) * (this.walking ? 0.015 : 0.012);

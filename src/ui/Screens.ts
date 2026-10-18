@@ -883,6 +883,12 @@ export class Screens {
       return;
     }
     const narrow = window.innerWidth <= 600;
+    // On desktop the delivery rail docks on the left; keep tickets clear of it.
+    let railRight = 0;
+    if (!narrow && !this.deliveryRoot.classList.contains('is-hidden')) {
+      const rail = this.deliveryRoot.getBoundingClientRect();
+      if (rail.width > 0 && rail.left < window.innerWidth / 2) railRight = rail.right + 12;
+    }
     const anchorMap = new Map(anchors.map((a) => [a.orderId, a]));
     const live = new Set<string>();
 
@@ -922,7 +928,10 @@ export class Screens {
       // On phones three bubbles would sit shoulder to shoulder and cover the
       // guests, so stagger alternating tickets upward.
       const stagger = narrow ? (orders.indexOf(view) % 2) * -78 : 0;
-      const x = narrow ? Math.max(64, Math.min(window.innerWidth - 64, anchor.x)) : anchor.x;
+      const halfWidth = entry.el.offsetWidth / 2;
+      const x = narrow
+        ? Math.max(64, Math.min(window.innerWidth - 64, anchor.x))
+        : Math.max(railRight + halfWidth, anchor.x);
       entry.el.style.transform = `translate(${x}px, ${anchor.y + stagger}px) translate(-50%, calc(-100% - 12px))`;
       entry.el.classList.toggle('is-visible', anchor.visible);
       entry.el.setAttribute(

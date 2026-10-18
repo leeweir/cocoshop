@@ -9919,13 +9919,15 @@ kbd {
 .sign-copy {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  line-height: 1.1;
+  gap: 3px;
+  line-height: 1;
   padding-right: 2px;
 }
 
 .sign-copy small {
-  font-size: 8.5px;
+  display: block;
+  line-height: 1.15;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--ink-3);
@@ -9933,7 +9935,9 @@ kbd {
 }
 
 .sign-copy b {
-  font-family: var(--font-round);
+  display: block;
+  line-height: 1.05;
+  font-family: var(--font-ui);
   font-size: 15px;
   font-weight: 800;
   color: var(--mint-600);
@@ -9947,8 +9951,9 @@ kbd {
 
 .sign-delivery {
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   height: 20px;
@@ -10347,11 +10352,14 @@ kbd {
   display: flex;
   align-items: center;
   gap: 4px;
+  align-self: flex-start;
   margin: 0;
-  padding: 0 6px;
-  font-size: 8.5px;
-  color: rgba(157, 123, 135, 0.82);
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
+  padding: 4px 9px;
+  border-radius: 99px;
+  background: rgba(255, 251, 248, 0.86);
+  box-shadow: 0 4px 12px rgba(130, 75, 95, 0.1);
+  font-size: 10px;
+  color: var(--ink-2);
 }
 
 .delivery-rail-foot .ic {
@@ -11849,8 +11857,7 @@ kbd {
   }
 
   .sign-delivery {
-    top: -6px;
-    right: -5px;
+    top: -8px;
     height: 17px;
     padding: 0 6px;
     font-size: 7.5px;
