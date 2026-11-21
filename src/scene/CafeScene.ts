@@ -5,8 +5,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { CustomerDef, DayTheme, DrinkDef, UpgradeId } from '../game/types';
-import { DRINKS_MAP, DRINKS } from '../game/data';
-import { Chibi } from './Chibi';
+import { CUSTOMERS, DRINKS_MAP, DRINKS } from '../game/data';
+import { GuestSheets, StorybookGuest } from './StorybookGuest';
 import {
   archShape,
   contactShadowTexture,
@@ -27,12 +27,11 @@ type CustomerVisualState = 'walking' | 'waiting' | 'served' | 'leaving' | 'angry
 
 interface SceneCustomer {
   orderId: string;
-  chibi: Chibi;
+  figure: StorybookGuest;
   seat: number;
   state: CustomerVisualState;
   /** Remaining waypoints; guests walk the aisle, never through furniture. */
   path: { x: number; z: number }[];
-  faceDir: number;
   leaveTimer: number;
   mood: 'neutral' | 'worried' | 'sad';
   lastScreen: { x: number; y: number; visible: boolean };
@@ -107,6 +106,7 @@ export class CafeScene {
   private bloom: UnrealBloomPass;
   private clockTime = 0;
   private customers = new Map<string, SceneCustomer>();
+  private sheets = new GuestSheets();
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2(-10, -10);
   private rayPointer = new THREE.Vector2();
@@ -206,6 +206,7 @@ export class CafeScene {
 
   setDay(day: number, theme: DayTheme, unlockedDrinkIds: string[]) {
     this.day = day;
+    for (const guest of CUSTOMERS) if (guest.minDay <= day) this.sheets.get(guest.id);
     this.unlockedDrinks = DRINKS.filter((d) => unlockedDrinkIds.includes(d.id));
     this.setTheme(theme);
     this.redrawMenu();
@@ -263,14 +264,13 @@ export class CafeScene {
 
   spawnCustomer(orderId: string, customer: CustomerDef, seat: number, vip = false) {
     const seatData = SEATS[seat];
-    const chibi = new Chibi(customer, vip);
+    const figure = new StorybookGuest(customer, this.sheets.get(customer.id), vip);
     const startX = EXIT_X;
-    chibi.root.position.set(startX, 0, AISLE_Z);
-    chibi.root.rotation.y = -Math.PI / 2;
-    chibi.setWalking(true);
-    this.scene.add(chibi.root);
+    figure.root.position.set(startX, 0, AISLE_Z);
+    figure.setWalking(true);
+    this.scene.add(figure.root);
     const shadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.05, 1.25),
+      new THREE.PlaneGeometry(1.18, .72),
       new THREE.MeshBasicMaterial({ map: this.softShadowTexture, transparent: true, depthWrite: false, opacity: 0.82 }),
     );
     shadow.rotation.x = -Math.PI / 2;
@@ -278,14 +278,13 @@ export class CafeScene {
     this.scene.add(shadow);
     this.customers.set(orderId, {
       orderId,
-      chibi,
+      figure,
       seat,
       state: 'walking',
       path: [
         { x: seatData.x, z: AISLE_Z },
         { x: seatData.x, z: CHAIR_Z },
       ],
-      faceDir: -Math.PI / 2,
       leaveTimer: 0,
       mood: 'neutral',
       lastScreen: { x: -999, y: -999, visible: false },
@@ -298,7 +297,7 @@ export class CafeScene {
     if (!c || c.state !== 'waiting') return;
     if (c.mood === mood) return;
     c.mood = mood;
-    c.chibi.setMood(mood);
+    c.figure.setMood(mood);
   }
 
   serveCustomer(orderId: string, drinkId: string, topping: string) {
@@ -306,8 +305,8 @@ export class CafeScene {
     if (!c) return;
     c.state = 'served';
     c.leaveTimer = 0;
-    c.chibi.setWalking(false);
-    c.chibi.cheer();
+    c.figure.setWalking(false);
+    c.figure.cheer();
     const drink = DRINKS_MAP[drinkId];
     const cup = buildCup({
       drinkId,
@@ -340,11 +339,11 @@ export class CafeScene {
     if (!c) return;
     if (angry) {
       c.state = 'angry';
-      c.chibi.sulk();
+      c.figure.sulk();
       c.leaveTimer = 0;
     } else {
       this.startLeaving(c);
-      c.chibi.setMood('neutral');
+      c.figure.setMood('neutral');
     }
   }
 
@@ -364,7 +363,7 @@ export class CafeScene {
     const result: BubbleAnchor[] = [];
     for (const c of this.customers.values()) {
       if (c.state === 'walking' || c.state === 'leaving' || c.state === 'angry') continue;
-      c.chibi.getHeadAnchor(v);
+      c.figure.getHeadAnchor(v);
       const world = v.clone();
       v.project(this.camera);
       const x = (v.x * 0.5 + 0.5) * width;
@@ -380,7 +379,7 @@ export class CafeScene {
     const c = this.customers.get(orderId);
     if (!c) return null;
     const v = new THREE.Vector3();
-    c.chibi.getHeadAnchor(v);
+    c.figure.getHeadAnchor(v);
     v.project(this.camera);
     return { x: (v.x * 0.5 + 0.5) * window.innerWidth, y: (-v.y * 0.5 + 0.5) * window.innerHeight };
   }
@@ -442,11 +441,12 @@ export class CafeScene {
     dom.removeEventListener('pointerleave', this.onPointerLeave);
     dom.removeEventListener('click', this.onClick);
     for (const c of this.customers.values()) {
-      c.chibi.dispose();
+      c.figure.dispose();
       c.shadow.geometry.dispose();
       (c.shadow.material as THREE.Material).dispose();
     }
     this.customers.clear();
+    this.sheets.dispose();
     this.composer.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
@@ -481,13 +481,13 @@ export class CafeScene {
     this.raycaster.setFromCamera(this.rayPointer, this.camera);
     const roots = [...this.customers.values()]
       .filter((c) => c.state === 'waiting')
-      .map((c) => c.chibi.root);
+      .map((c) => c.figure.root);
     const hits = this.raycaster.intersectObjects(roots, true);
     if (!hits.length) return null;
     let obj: THREE.Object3D | null = hits[0].object;
     while (obj && !obj.userData.customer) obj = obj.parent;
-    if (obj?.userData.customer instanceof Chibi) {
-      const found = [...this.customers.values()].find((c) => c.chibi === obj!.userData.customer);
+    if (obj?.userData.customer instanceof StorybookGuest) {
+      const found = [...this.customers.values()].find((c) => c.figure === obj!.userData.customer);
       return found?.orderId ?? null;
     }
     return null;
@@ -516,14 +516,37 @@ export class CafeScene {
 
   private setHovered(id: string | null) {
     if (this.hoveredId === id) return;
-    if (this.hoveredId) this.customers.get(this.hoveredId)?.chibi.setHovered(false);
+    if (this.hoveredId) this.customers.get(this.hoveredId)?.figure.setHovered(false);
     this.hoveredId = id;
-    if (id) this.customers.get(id)?.chibi.setHovered(true);
+    if (id) this.customers.get(id)?.figure.setHovered(true);
   }
 
   private updateCamera(dt: number) {
     const target = this.cameraBase.clone();
     const look = this.lookBase.clone();
+    if (this.cameraMode === 'play' && this.camera.aspect < .8) {
+      let left = Infinity;
+      let right = -Infinity;
+      for (const guest of this.customers.values()) {
+        if (guest.state === 'leaving') continue;
+        const x = SEATS[guest.seat].x;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+      }
+      if (left <= right) {
+        const center = (left + right) / 2;
+        target.x += center;
+        look.x += center;
+        // Keep a lone guest close. For a group, fit both outer silhouettes and their tickets.
+        const tilt = Math.atan2(target.y - look.y, target.z - look.z);
+        const distance = (target.z - CHAIR_Z - .16) * Math.cos(tilt) + (target.y - 1.2) * Math.sin(tilt);
+        const halfWidth = (right - left) / 2 + .84;
+        const halfFov = THREE.MathUtils.degToRad(this.camera.fov / 2);
+        const retreat = Math.max(0, halfWidth / (Math.tan(halfFov) * this.camera.aspect) - distance);
+        target.y += retreat * Math.sin(tilt);
+        target.z += retreat * Math.cos(tilt);
+      }
+    }
     target.x += this.mouseParallax.x * 0.16;
     target.y += this.mouseParallax.y * 0.08;
     look.x += this.mouseParallax.x * 0.06;
@@ -537,18 +560,19 @@ export class CafeScene {
 
   private startLeaving(c: SceneCustomer) {
     c.state = 'leaving';
-    const here = c.chibi.root.position;
+    const here = c.figure.root.position;
     c.path = [
       { x: here.x, z: AISLE_Z },
       { x: EXIT_X, z: AISLE_Z },
     ];
-    c.chibi.setSitting(false);
-    c.chibi.setWalking(true);
+    c.figure.setSitting(false);
+    c.figure.faceRight(true);
+    c.figure.setWalking(true);
   }
 
   /** Walks one step along the waypoint path; returns true once it is empty. */
   private stepPath(c: SceneCustomer, dt: number, speed: number): boolean {
-    const pos = c.chibi.root.position;
+    const pos = c.figure.root.position;
     let budget = dt * speed;
     while (c.path.length && budget > 0) {
       const wp = c.path[0];
@@ -559,17 +583,13 @@ export class CafeScene {
         c.path.shift();
         continue;
       }
-      c.faceDir = Math.atan2(dx, dz);
+      if (Math.abs(dx) > .001) c.figure.faceRight(dx > 0);
       const step = Math.min(dist, budget);
       pos.x += (dx / dist) * step;
       pos.z += (dz / dist) * step;
       budget -= step;
       if (step >= dist) c.path.shift();
     }
-    // shortest-arc turn toward the heading
-    let rotDiff = c.faceDir - c.chibi.root.rotation.y;
-    rotDiff = Math.atan2(Math.sin(rotDiff), Math.cos(rotDiff));
-    c.chibi.root.rotation.y += Math.sign(rotDiff) * Math.min(Math.abs(rotDiff), dt * 7);
     c.shadow.position.x = pos.x;
     c.shadow.position.z = pos.z + 0.15;
     return c.path.length === 0;
@@ -577,16 +597,12 @@ export class CafeScene {
 
   private updateCustomers(dt: number) {
     for (const [id, c] of [...this.customers]) {
-      c.chibi.update(dt, this.clockTime);
-      const chibi = c.chibi;
+      const figure = c.figure;
       if (c.state === 'walking') {
         if (this.stepPath(c, dt, 2.2)) {
-          // turn around to face the room before sitting down
-          chibi.root.rotation.y = 0;
-          c.faceDir = 0;
           c.state = 'waiting';
-          chibi.setWalking(false);
-          chibi.setSitting(true);
+          figure.setWalking(false);
+          figure.setSitting(true);
           this.options.onCustomerArrive?.(id);
         }
       } else if (c.state === 'served') {
@@ -601,6 +617,7 @@ export class CafeScene {
           continue;
         }
       }
+      figure.update(dt);
     }
   }
 
@@ -609,7 +626,7 @@ export class CafeScene {
     if (!c) return;
     this.busySeats.delete(c.seat);
     this.customers.delete(id);
-    c.chibi.dispose();
+    c.figure.dispose();
     c.shadow.geometry.dispose();
     (c.shadow.material as THREE.Material).dispose();
     this.options.onCustomerGone?.(id);

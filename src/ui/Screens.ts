@@ -51,7 +51,7 @@ import type {
 } from '../game/types';
 import type { BubbleAnchor } from '../scene/CafeScene';
 import { icon, ingredientIcon } from './icons';
-import { portraitImg } from './portrait';
+import { portraitImg } from '../art/guestArt';
 
 export type NotebookTab = 'orders' | 'recipes' | 'regulars';
 
