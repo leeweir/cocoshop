@@ -1148,7 +1148,7 @@ export const UPGRADES: UpgradeDef[] = [
     id: 'training',
     name: '收尾特训',
     latin: 'FINISH CLASS',
-    description: '节拍窗口更宽、搅拌目标带更大、堆球落点更宽容。',
+    description: '节拍窗口更宽、搅拌目标带更大、堆球落点更宽容，旅行小游戏也一样。',
     flavor: '店主偷偷练习了三百次：摇、搅、堆，一样不落。',
     maxLevel: 2,
     costs: [90, 160],
@@ -1253,18 +1253,20 @@ export function getDayConfig(day: number, extraDrinkIds: string[] = []): DayConf
   const unlocked = DRINKS.filter((d) => d.unlockDay <= day || extraDrinkIds.includes(d.id));
   const newDrinks = DRINKS.filter((d) => d.unlockDay === day);
   const theme = THEMES[(day - 1) % THEMES.length];
+  // Day 1 is the learning day: fewer, calmer guests while the flow is new.
+  const firstDay = day === 1;
   return {
     day,
     shiftSeconds: Math.min(205, 155 + (day - 1) * 7),
     // Plateaus once spawn rate and shift length stop growing, so the goal
     // tracks what a steady pair of hands can actually serve.
     goal: Math.min(600, 90 + (day - 1) * 65),
-    spawnEvery: Math.max(11, 17 - (day - 1) * 0.75),
+    spawnEvery: firstDay ? 22 : Math.max(11, 17 - (day - 1) * 0.75),
     deliveryEvery: day >= 2 ? Math.max(20, 30 - (day - 2) * 1.25) : 0,
-    patience: Math.max(50, 66 - (day - 1) * 2),
+    patience: firstDay ? 90 : Math.max(50, 66 - (day - 1) * 2),
     vipChance: day >= 3 ? Math.min(0.18, 0.05 + day * 0.012) : 0,
     rushChance: day >= 2 ? Math.min(0.26, 0.07 + day * 0.025) : 0,
-    maxOrders: day <= 3 ? 3 : 4,
+    maxOrders: firstDay ? 2 : day <= 3 ? 3 : 4,
     theme,
     challenge: challengeFor(day, theme),
     unlockedDrinkIds: unlocked.map((d) => d.id),

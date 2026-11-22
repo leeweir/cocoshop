@@ -1352,6 +1352,9 @@ export class Game {
         speed: cfg.speed,
         zone: cfg.zone,
         drift: cfg.drift,
+        // Trips happen in the evening, so the pearl pouch counted is the one
+        // packed for tomorrow, not the shift that just ended.
+        ease: this.finishEase(this.save.city.supplies),
         seed: Math.floor(Math.random() * 2 ** 31),
       });
     } else {
@@ -1922,8 +1925,8 @@ export class Game {
   }
 
   /** Widens every finish window: 收尾特训 +18% per level, plus 珍珠礼袋. */
-  private finishEase(): number {
-    return 1 + this.save.upgrades.training * 0.18 + this.suppliesBuff().zone;
+  private finishEase(supplies: SupplyId[] = this.supplyIds()): number {
+    return 1 + this.save.upgrades.training * 0.18 + supplyBuff(supplies).zone;
   }
 
   /** 「选杯」: picking a drink fills all seven fields with its base recipe. */

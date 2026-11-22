@@ -64,7 +64,7 @@ export const SUPPLIES: SupplyDef[] = [
     name: '珍珠礼袋',
     latin: 'PEARL POUCH',
     description: '手搓的黑糖珍珠，摇、搅、堆都格外顺手。',
-    effectLabel: '次日收尾判定 +18%',
+    effectLabel: '今晚旅行与次日收尾判定 +18%',
     shortLabel: '收尾判定 +18%',
     cost: 30,
     color: '#d5ab84',
