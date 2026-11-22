@@ -1,12 +1,13 @@
 import { CITY_EVENING_SLOTS, CITY_STORIES, SUPPLIES, TRAVEL_CHAPTERS } from './expansion';
-import { CUSTOMERS, DRINKS_MAP, UPGRADES } from './data';
-import type { CitySave, SaveData, SupplyId, TravelRecord, TravelSave, UpgradeId } from './types';
+import { CUSTOMERS, DRINKS_MAP, FLAVORS_MAP, ICES_MAP, MILKS_MAP, SIZES_MAP, SUGARS_MAP, TEAS_MAP, TOPPINGS_MAP, UPGRADES } from './data';
+import { DECOR_DEFAULTS, DECOR_MAP, DECOR_SLOTS } from './decor';
+import type { CitySave, DecorSave, LastOrder, Recipe, SaveData, SupplyId, TravelRecord, TravelSave, UpgradeId } from './types';
 
 const SAVE_KEY = 'peach-mint-cafe.save.v1';
 
 export function freshSave(): SaveData {
   return {
-    version: 3,
+    version: 4,
     day: 1,
     coins: 0,
     totalCoinsEarned: 0,
@@ -21,6 +22,7 @@ export function freshSave(): SaveData {
     bestDeliveryRating: 0,
     tutorialSeen: false,
     sound: true,
+    music: false,
     city: {
       evening: 1,
       slotsLeft: CITY_EVENING_SLOTS,
@@ -33,12 +35,51 @@ export function freshSave(): SaveData {
       traveling: null,
     },
     travel: { chapters: {} },
+    lastOrders: {},
+    chatsSeen: [],
+    decor: { owned: Object.values(DECOR_DEFAULTS), equipped: { ...DECOR_DEFAULTS } },
+    challengesDone: 0,
   };
 }
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
   const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+function parseRecipe(value: unknown): Recipe | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const pick = <T extends string>(key: keyof Recipe, table: Record<string, unknown>): T | null => {
+    const v = raw[key];
+    return typeof v === 'string' && v in table ? (v as T) : null;
+  };
+  const tea = pick<Recipe['tea']>('tea', TEAS_MAP);
+  const milk = pick<Recipe['milk']>('milk', MILKS_MAP);
+  const flavor = pick<Recipe['flavor']>('flavor', FLAVORS_MAP);
+  const topping = pick<Recipe['topping']>('topping', TOPPINGS_MAP);
+  const ice = pick<Recipe['ice']>('ice', ICES_MAP);
+  const sugar = pick<Recipe['sugar']>('sugar', SUGARS_MAP);
+  const size = pick<Recipe['size']>('size', SIZES_MAP);
+  if (!tea || !milk || !flavor || !topping || !ice || !sugar || !size) return null;
+  return { tea, milk, flavor, topping, ice, sugar, size };
+}
+
+function parseDecor(value: unknown): DecorSave {
+  const raw = (value ?? {}) as Partial<{ owned: unknown; equipped: unknown }>;
+  const owned = new Set<string>(Object.values(DECOR_DEFAULTS));
+  if (Array.isArray(raw.owned)) {
+    for (const id of raw.owned) if (typeof id === 'string' && DECOR_MAP[id]) owned.add(id);
+  }
+  const rawEquipped = (raw.equipped ?? {}) as Record<string, unknown>;
+  const equipped = { ...DECOR_DEFAULTS };
+  for (const slot of DECOR_SLOTS) {
+    const id = rawEquipped[slot.id];
+    if (typeof id === 'string' && owned.has(id) && DECOR_MAP[id]?.slot === slot.id) {
+      equipped[slot.id] = id;
+    }
+  }
+  return { owned: [...owned], equipped };
 }
 
 export function loadSave(): SaveData {
@@ -124,8 +165,23 @@ export function loadSave(): SaveData {
       city.traveling = rawTraveling;
     }
 
+    const rawLast = (data.lastOrders ?? {}) as Record<string, unknown>;
+    const lastOrders: Record<string, LastOrder> = {};
+    for (const id of known) {
+      const entry = rawLast[id] as Partial<LastOrder> | undefined;
+      if (!entry || typeof entry !== 'object') continue;
+      const recipe = parseRecipe(entry.recipe);
+      if (typeof entry.drinkId !== 'string' || !DRINKS_MAP[entry.drinkId] || !recipe) continue;
+      lastOrders[id] = { drinkId: entry.drinkId, recipe, day: clampInt(entry.day, 1, 999, 1) };
+    }
+
+    const chatIds = new Set(CUSTOMERS.flatMap((customer) => customer.chats.map((chat) => chat.id)));
+    const chatsSeen = Array.isArray(data.chatsSeen)
+      ? [...new Set(data.chatsSeen.filter((id): id is string => typeof id === 'string' && chatIds.has(id)))]
+      : [];
+
     return {
-      version: 3,
+      version: 4,
       day: upcomingDay,
       pendingShopDay: recoveredShopDay,
       openShiftDay: openShiftRaw > 0 && openShiftRaw === pendingShopDay ? openShiftRaw : undefined,
@@ -144,6 +200,11 @@ export function loadSave(): SaveData {
       bestDeliveryRating: clampInt(data.bestDeliveryRating, 0, 3, 0),
       tutorialSeen: data.tutorialSeen === true,
       sound: data.sound !== false,
+      music: data.music === true,
+      lastOrders,
+      chatsSeen,
+      decor: parseDecor(data.decor),
+      challengesDone: clampInt(data.challengesDone, 0, 99_999, 0),
     };
   } catch {
     return base;

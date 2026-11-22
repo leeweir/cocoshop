@@ -32,24 +32,32 @@ import {
   type SupplyDef,
   type TravelChapterDef,
 } from '../game/expansion';
+import { RAPPORT_USUAL, RAPPORT_WISH, TASTE_TAGS, wishCandidates, wishText } from '../game/orders';
 import type {
+  ChallengeProgress,
   CitySpotId,
   CraftSelections,
   CraftStep,
+  CustomerChat,
   CustomerDef,
   DayConfig,
   DayTheme,
+  DecorSlot,
   DrinkDef,
   FinishMode,
+  LastOrder,
   OrderState,
   Recipe,
   SaveData,
   ServeResult,
   SupplyId,
+  TasteTag,
   TravelRecord,
   UpgradeId,
 } from '../game/types';
 import type { BubbleAnchor } from '../scene/CafeScene';
+import { FINISH_ENGINE, FINISH_UNITS, type FinishEngine, type FinishFrame, type FinishGrade } from '../game/finish';
+import { DECOR_SLOTS, decorForSlot } from '../game/decor';
 import { icon, ingredientIcon } from './icons';
 import { portraitImg } from '../art/guestArt';
 
@@ -62,10 +70,15 @@ export interface UiActions {
   openOrder(id: string): void;
   acceptOrder(id: string): void;
   startCraft(id: string): void;
+  /** 「选杯」: pick a drink, auto-filling its base recipe. */
+  pickDrink(id: string): void;
   selectIngredient(key: keyof CraftSelections, value: string): void;
   clearSelections(): void;
   goShake(): void;
+  /** Finish press (pointerdown / Space keydown). */
   tapShake(): void;
+  /** Finish release (pointerup / Space keyup); only the hold engine cares. */
+  releaseShake(): void;
   finishShake(): void;
   serve(): void;
   closeOverlay(): void;
@@ -77,8 +90,13 @@ export interface UiActions {
   openHelp(): void;
   closeHelp(): void;
   toggleSound(): void;
+  toggleMusic(): void;
   nextFromSummary(): void;
   buyUpgrade(id: UpgradeId): void;
+  /** Buy a decor style (it is equipped straight away). */
+  buyDecor(id: string): void;
+  /** Switch to an owned decor style for free. */
+  equipDecor(id: string): void;
   nextDay(): void;
   skipTutorial(): void;
   toggleSign(): void;
@@ -98,6 +116,7 @@ export interface UiActions {
   travelNext(): void;
   travelChoose(index: number): void;
   travelTimingTap(): void;
+  travelTimingRelease(): void;
   travelQuizAnswer(index: number): void;
   travelQuizNext(): void;
   travelFinish(): void;
@@ -119,23 +138,29 @@ export interface HudState {
   signOpen: boolean;
   sound: boolean;
   coach: string | null;
+  /** Today's 每日小目标 and live progress. */
+  challenge: ChallengeProgress | null;
 }
 
 export interface WorldOrderView {
   order: OrderState;
   customer: CustomerDef;
   drink: DrinkDef;
+  /** Menu orders show the drink's name only while the player is learning. */
+  revealName: boolean;
 }
 
 export interface ShakeView {
+  /** Drink being finished (picked in 「选杯」, else the order's drink). */
+  drink: DrinkDef;
+  engine: FinishEngine;
   taps: number;
   tapsNeeded: number;
   scores: number[];
-  zone: number;
+  grades: FinishGrade[];
   quality: number;
   done: boolean;
   perfect: boolean;
-  mode: FinishMode;
 }
 
 export interface PackagingItemView {
@@ -145,17 +170,30 @@ export interface PackagingItemView {
   icon: string;
   color: string;
   packed: boolean;
+  /** Teaching highlight for the first deliveries. */
+  hint: boolean;
 }
 
 export interface PackagingView {
   items: PackagingItemView[];
+  needed: number;
+  done: number;
+  wrong: number;
   allPacked: boolean;
 }
 
 export interface CraftView {
   order: OrderState;
   customer: CustomerDef;
+  /** Drink being made: the picked one, else the order's drink. */
   drink: DrinkDef;
+  /** The drink the order is about (a valid candidate for wish orders). */
+  orderDrink: DrinkDef;
+  /** Drink picked in 「选杯」; null until the player picks. */
+  chosen: DrinkDef | null;
+  revealName: boolean;
+  rapport: number;
+  last: { drink: DrinkDef; recipe: Recipe } | null;
   selections: CraftSelections;
   step: CraftStep;
   shake: ShakeView | null;
@@ -168,13 +206,17 @@ export interface ChatView {
   order: OrderState;
   customer: CustomerDef;
   drink: DrinkDef;
+  chat: CustomerChat;
   replyIndex: number | null;
+  /** Answered with the option this guest loves. */
+  liked: boolean;
 }
 
 export interface DeliveryRailView {
   order: OrderState;
   customer: CustomerDef;
   drink: DrinkDef;
+  revealName: boolean;
 }
 
 export interface TitleView {
@@ -197,6 +239,7 @@ export interface OrderSlipView {
   drink: DrinkDef;
   recipes: DrinkDef[];
   tutorial: boolean;
+  revealName: boolean;
 }
 
 export interface NotebookOrderView {
@@ -208,9 +251,11 @@ export interface NotebookOrderView {
 export interface NotebookView {
   day: number;
   themeName: string;
+  revealName: boolean;
   orders: NotebookOrderView[];
   met: CustomerDef[];
   regulars: Record<string, number>;
+  lastOrders: Record<string, LastOrder>;
   unlocked: DrinkDef[];
   totalServed: number;
 }
@@ -238,6 +283,8 @@ export interface SummaryView {
   maxCombo: number;
   hearts: number;
   bonus: number;
+  challenge: ChallengeProgress;
+  challengeReward: number;
   coins: number;
   grade: number;
   goalMet: boolean;
@@ -248,6 +295,7 @@ export interface ShopView {
   day: number;
   coins: number;
   upgrades: Record<UpgradeId, number>;
+  decor: { owned: string[]; equipped: Record<DecorSlot, string> };
   nextTheme: DayTheme;
   nextGoal: number;
   nextShift: number;
@@ -270,8 +318,10 @@ export interface PauseView {
   goal: number;
   hearts: number;
   sound: boolean;
+  music: boolean;
   supplies: SupplyDef[];
   travelBonus: number;
+  challenge: ChallengeProgress;
 }
 
 export interface CitySupplyView {
@@ -287,6 +337,8 @@ export interface CityStoryChoiceView {
 
 export interface CityStoryView {
   id: string;
+  /** Regular this story is about (portrait shown); null for shopkeeper stories. */
+  regular: CustomerDef | null;
   kicker: string;
   title: string;
   text: string;
@@ -332,10 +384,12 @@ export interface TravelView {
 
 export interface TravelMiniView {
   mode: 'timing' | 'quiz';
+  /** Timing engine (rhythm / hold / pendulum); null for the quiz. */
+  engine: FinishEngine | null;
   taps: number;
   tapsNeeded: number;
   scores: number[];
-  zone: number;
+  grades: FinishGrade[];
   done: boolean;
   stars: number;
   unit: string;
@@ -378,6 +432,9 @@ const SELECTION_GROUPS: {
   { key: 'size', label: '杯型', latin: 'SIZE', options: SIZES },
 ];
 
+/** Fields the guest's slip talks about; listed first in 「选杯」 because they are what changes. */
+const MODIFIER_KEYS: readonly (keyof CraftSelections)[] = ['ice', 'sugar', 'size', 'topping'];
+
 const UPGRADE_ICONS: Record<UpgradeId, string> = {
   seat: 'seat',
   sign: 'signupgrade',
@@ -417,8 +474,11 @@ function miniCup(drink: DrinkDef, extra = ''): string {
   </span>`;
 }
 
-function reqChips(request: Recipe, category: DrinkDef['category'] = 'tea'): string {
-  const keys = ['ice', 'sugar', 'size', 'topping'] as const;
+function reqChips(
+  request: Recipe,
+  category: DrinkDef['category'] = 'tea',
+  keys: readonly ('ice' | 'sugar' | 'size' | 'topping')[] = ['ice', 'sugar', 'size', 'topping'],
+): string {
   return keys
     .map((key) => {
       const meta = recipeValueMeta(key, request[key]);
@@ -457,8 +517,41 @@ function badges(order: OrderState): string {
     order.channel === 'delivery' ? `<span class="badge badge-delivery">${icon('delivery')} 外卖</span>` : '',
     order.vip ? `<span class="badge badge-vip">${icon('crown')} 贵宾</span>` : '',
     order.rush ? `<span class="badge badge-rush">${icon('bolt')} 加急</span>` : '',
-    order.wish ? `<span class="badge badge-wish">${icon('heartWish')} 常客心愿</span>` : '',
+    order.kind === 'wish' ? `<span class="badge badge-wish">${icon('heartWish')} 心愿单</span>` : '',
+    order.kind === 'usual' ? `<span class="badge badge-usual">${icon('notebook')} 老样子</span>` : '',
   ].join('');
+}
+
+function tagChips(tags: readonly TasteTag[], extra = ''): string {
+  return tags
+    .map((tag) => `<span class="taste-chip ${extra}" style="--taste:${TASTE_TAGS[tag].color}">${TASTE_TAGS[tag].label}</span>`)
+    .join('');
+}
+
+/** The requirements the guest actually spelled out for this kind of order. */
+function askChips(order: OrderState, drink: DrinkDef): string {
+  if (order.kind === 'usual') return '';
+  // Several categories can satisfy a wish; plain tea wording keeps the chips from naming one.
+  if (order.kind === 'wish') return reqChips(order.request, 'tea', ['ice', 'sugar', 'size']);
+  return reqChips(order.request, categoryOf(drink));
+}
+
+/** What the guest says they want, without spoiling the drink once the player should recognise it. */
+function askLine(order: OrderState, drink: DrinkDef, revealName: boolean): string {
+  if (order.kind === 'usual') return '还是老样子，拜托啦。';
+  if (order.kind === 'wish') return `想喝一杯${wishText(order.wishTags ?? [])}。`;
+  return revealName ? `${drink.name}：${drink.tagline}` : drink.tagline;
+}
+
+function lastOrderLine(drink: DrinkDef, recipe: Recipe): string {
+  const cat = categoryOf(drink);
+  return [
+    drink.name,
+    recipeValueLabelFor(cat, 'ice', recipe.ice),
+    recipeValueLabelFor(cat, 'sugar', recipe.sugar),
+    recipeValueLabelFor(cat, 'size', recipe.size),
+    recipeValueLabelFor(cat, 'topping', recipe.topping),
+  ].join(' · ');
 }
 
 function orderPlace(order: OrderState): string {
@@ -467,21 +560,145 @@ function orderPlace(order: OrderState): string {
 }
 
 function finishUnit(mode: FinishMode): string {
-  if (mode === 'blend') return '次';
+  if (mode === 'blend') return '轮';
   if (mode === 'scoop') return '球';
-  return '下';
+  return '拍';
 }
 
-function finishDoneLine(drink: DrinkDef, perfect: boolean): string {
-  if (drink.finish === 'blend') return perfect ? '奶昔绵密，完美！' : '搅拌完成，出杯吧';
-  if (drink.finish === 'scoop') return perfect ? '圆滚滚，完美！' : '堆球完成，出杯吧';
+function finishDoneLine(mode: FinishMode, perfect: boolean): string {
+  if (mode === 'blend') return perfect ? '奶昔绵密，完美！' : '搅拌完成，出杯吧';
+  if (mode === 'scoop') return perfect ? '圆滚滚，完美！' : '堆球完成，出杯吧';
   return perfect ? '云朵奶泡，完美！' : '手摇完成，出杯吧';
 }
 
-function finishTitle(drink: DrinkDef): string {
-  if (drink.finish === 'blend') return '握住搅拌杯，把奶昔打绵';
-  if (drink.finish === 'scoop') return '一球一球，堆成小小的山';
+function finishTitle(mode: FinishMode): string {
+  if (mode === 'blend') return '按住搅拌，在刚刚好的稠度松手';
+  if (mode === 'scoop') return '一球一球，堆成小小的山';
   return '跟着节拍，摇出云朵奶泡';
+}
+
+function finishWord(grade: FinishGrade, overLabel = '太稠'): string {
+  if (grade === 'perfect') return '完美';
+  if (grade === 'good') return '不错';
+  if (grade === 'over') return overLabel;
+  return '偏了';
+}
+
+function finishGradeClass(grade: FinishGrade | undefined): string {
+  if (grade === 'perfect') return 'is-perfect';
+  if (grade === 'good') return 'is-good';
+  return grade ? 'is-miss' : '';
+}
+
+interface FinishEls {
+  stage: HTMLElement;
+  press: HTMLElement | null;
+  notes: HTMLElement[];
+  hit: HTMLElement | null;
+  hero: HTMLElement | null;
+  fill: HTMLElement | null;
+  band: HTMLElement | null;
+  ghost: HTMLElement | null;
+  scoop: HTMLElement | null;
+  target: HTMLElement | null;
+  pile: HTMLElement | null;
+  pointer: HTMLElement | null;
+  zone: HTMLElement | null;
+  /** Balls currently drawn in the pile. */
+  balls: number;
+}
+
+/** Mini-game stage shared by the craft finish panel and the travel mini. Updated per frame by `updateFinish`. */
+function finishStageMarkup(engine: FinishEngine, units: number, scale: [string, string, string], heroIcon: string): string {
+  const scaleRow = `<div class="finish-scale"><span>${scale[0]}</span><span>${scale[1]}</span><span>${scale[2]}</span></div>`;
+  if (engine === 'rhythm') {
+    return `<div class="finish-stage engine-rhythm" data-finish-stage data-engine="rhythm">
+      <div class="rhythm-lane">
+        <span class="rhythm-rail"></span>
+        <span class="rhythm-hit" data-finish-hit><i></i></span>
+        ${Array.from({ length: units }, (_, i) => `<span class="rhythm-note" data-finish-note="${i}">${icon('sparkle')}</span>`).join('')}
+      </div>
+      <div class="finish-scale is-rhythm"><span>${icon(heroIcon)} ${scale[1]}</span><span>← 跟着滴答声</span></div>
+    </div>`;
+  }
+  if (engine === 'hold') {
+    return `<div class="finish-stage engine-hold" data-finish-stage data-engine="hold">
+      <div class="hold-hero" data-finish-hero>${icon(heroIcon)}</div>
+      <div class="hold-body">
+        <div class="hold-meter">
+          <span class="hold-band" data-finish-band></span>
+          <span class="hold-fill" data-finish-fill></span>
+          <span class="hold-ghost" data-finish-ghost></span>
+        </div>
+        ${scaleRow}
+      </div>
+    </div>`;
+  }
+  if (engine === 'stack') {
+    return `<div class="finish-stage engine-stack" data-finish-stage data-engine="stack">
+      <div class="stack-lane">
+        <span class="stack-scoop" data-finish-scoop><i class="stack-ball is-held"></i><i class="stack-drop-line"></i></span>
+        <span class="stack-target" data-finish-target></span>
+        <div class="stack-pile" data-finish-pile></div>
+        <span class="stack-cone"></span>
+      </div>
+      ${scaleRow}
+    </div>`;
+  }
+  return `<div class="finish-stage engine-pendulum" data-finish-stage data-engine="pendulum">
+    <div class="timing-track">
+      <span class="timing-zone" data-finish-zone></span>
+      <span class="timing-center"></span>
+      <span class="timing-pointer" data-finish-pointer></span>
+    </div>
+    <div class="timing-scale"><span>${scale[0]}</span><span>${scale[1]}</span><span>${scale[2]}</span></div>
+  </div>`;
+}
+
+function finishSlots(shake: ShakeView | null, needed: number, unit: string): string {
+  return Array.from({ length: needed }, (_, i) => {
+    const grade = shake?.grades[i];
+    const score = shake?.scores[i];
+    const hint =
+      grade === undefined || score === undefined
+        ? shake && i === shake.taps && !shake.done
+          ? '进行中'
+          : '等待'
+        : `${finishWord(grade)} · ${Math.round(score * 100)}%`;
+    return `<span class="shake-slot ${finishGradeClass(grade)}" data-slot="${i}"><i>${icon(grade === undefined ? 'sparkle' : 'check')}</i><b>第 ${i + 1} ${unit}</b><small>${hint}</small></span>`;
+  }).join('');
+}
+
+/** The craft 「收尾」 panel; replaced whole when the picked drink changes the finish mode. */
+function finishPanelMarkup(drink: DrinkDef, delivery: boolean, shake: ShakeView | null): string {
+  const mode = drink.finish;
+  const catMeta = CATEGORY_META[categoryOf(drink)];
+  const finish = FINISH_META[mode];
+  const engine = shake?.engine ?? FINISH_ENGINE[mode];
+  const needed = shake?.tapsNeeded ?? FINISH_UNITS[engine];
+  const unit = finishUnit(mode);
+  return `<section class="craft-step shake-panel finish-${mode}" data-panel="shake" data-finish-mode="${mode}" style="--cat:${catMeta.color};--ball:${drink.color};--ball-top:${drink.colorTop}">
+    <div class="panel-head">
+      <div>
+        <span class="panel-kicker">STEP 2 · ${catMeta.finishLatin} · ${catMeta.finishLabel}</span>
+        <h3>${finishTitle(mode)}</h3>
+        <p>${finish.hint}</p>
+      </div>
+      <div class="shake-count"><b data-shake-count>${shake?.taps ?? 0}</b><span>/ ${needed}</span></div>
+    </div>
+    <div class="shake-visual finish-visual">
+      <div class="shake-mood">
+        <span data-shake-label>准备好啦</span>
+        <small>${catMeta.qualityLabel} · ${engine === 'rhythm' ? '压准节拍' : engine === 'hold' ? '落进目标带' : '对准顶部'}</small>
+      </div>
+      ${finishStageMarkup(engine, needed, finish.scale, finish.icon)}
+    </div>
+    <div class="shake-taps" data-shake-taps data-shake-needed="${needed}">${finishSlots(shake, needed, unit)}</div>
+    <div class="shake-actions">
+      <button type="button" class="shake-button" data-action="shakeTap" data-finish-press><span>${finish.button}</span><small>${finish.control}</small></button>
+      <button type="button" class="btn btn-primary btn-big is-hidden" data-action="finishShake" data-shake-finish>${icon('check')} ${catMeta.finishLabel}完成，${delivery ? '准备打包' : '准备出杯'}</button>
+    </div>
+  </section>`;
 }
 
 function readyTitle(drink: DrinkDef, delivery: boolean): string {
@@ -494,35 +711,34 @@ function readyTitle(drink: DrinkDef, delivery: boolean): string {
 function packagingMarkup(view: CraftView): string {
   const pack = view.packaging;
   if (!pack) return '';
-  const done = pack.items.filter((item) => item.packed).length;
+  const note = view.order.delivery?.note;
   return `
-    <div class="pack-checklist" data-pack-checklist>
+    <div class="pack-checklist pack-shelf" data-pack-checklist>
       <div class="pack-head">
-        <div><span>${icon('delivery')} 外卖打包</span><b data-pack-progress>${done} / ${pack.items.length}</b></div>
-        <small>骑手在等，逐项点名装好再交给他。</small>
+        <div><span>${icon('delivery')} 打包台</span><b data-pack-progress>需要 ${pack.needed} 件 · 已装 ${pack.done}</b></div>
+        <small>照品类挑包材，留言里的要求也要装上；保温袋最后装。${pack.items.some((item) => item.hint) ? '这几单先帮你圈出来啦。' : ''}</small>
+        ${note ? `<p class="pack-note">${icon('chat')} “${note}”</p>` : ''}
       </div>
       <div class="pack-items">
         ${pack.items
           .map(
-            (item) => `<button type="button" class="pack-item ${item.packed ? 'is-packed' : ''}" data-action="packItem" data-id="${item.id}" data-pack-item="${item.id}" style="--pack:${item.color}" aria-pressed="${item.packed}">
+            (item) => `<button type="button" class="pack-item ${item.packed ? 'is-packed' : ''} ${item.hint ? 'is-hint' : ''}" data-action="packItem" data-id="${item.id}" data-pack-item="${item.id}" style="--pack:${item.color}" aria-pressed="${item.packed}">
               <span class="pack-check">${icon(item.packed ? 'check' : item.icon)}</span>
               <span class="pack-copy"><b>${item.label}</b><small>${item.packed ? '装好了' : item.sub}</small></span>
             </button>`,
           )
           .join('')}
       </div>
+      <p class="pack-wrong ${pack.wrong > 0 ? '' : 'is-hidden'}" data-pack-wrong>${icon('heart')} 拿错 ${pack.wrong} 次，打包分 −${pack.wrong * 15}%</p>
     </div>
   `;
 }
 
-function chatRapport(rapport: number): string {
-  return `<span class="rapport-hearts">${Array.from({ length: 3 }, (_, i) => `<i class="${i < Math.min(3, rapport) ? 'is-on' : ''}">${icon('heart')}</i>`).join('')}</span>`;
-}
+/** Rapport needed to light each heart; matches the chat tiers (0 / 2 / 4 / 7). */
+const RAPPORT_HEARTS = [2, 4, 7];
 
-function scoreWord(score: number): string {
-  if (score >= 0.86) return '完美';
-  if (score >= 0.62) return '不错';
-  return '偏了';
+function chatRapport(rapport: number): string {
+  return `<span class="rapport-hearts" title="好感 ${rapport}">${RAPPORT_HEARTS.map((need) => `<i class="${rapport >= need ? 'is-on' : ''}">${icon('heart')}</i>`).join('')}</span>`;
 }
 
 function gradeHeadline(grade: number, reason: 'time' | 'hearts'): string {
@@ -574,6 +790,113 @@ const CITY_SHORT: Record<CitySpotId, string> = {
   home: '家',
 };
 
+/** Shared paper-cut shadow for the city silhouettes; injected once alongside the buildings. */
+const CITY_PAPER_DEFS = `<svg class="city-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>
+  <filter id="cityPaper" x="-12%" y="-12%" width="124%" height="134%"><feDropShadow dx="0" dy="1.4" stdDeviation=".55" flood-color="#3a2131" flood-opacity=".38"/></filter>
+</defs></svg>`;
+
+/** Six distinct paper-cut buildings (viewBox 120×96, ground at y 94). `.spot` takes the spot colour. */
+const CITY_ART: Record<CitySpotId, string> = {
+  shop: `
+    <g filter="url(#cityPaper)">
+      <path class="spot" d="M12 47 60 17l48 30Z"/>
+      <rect class="wall" x="20" y="45" width="80" height="49" rx="3"/>
+    </g>
+    <g filter="url(#cityPaper)">
+      <path class="mint" d="M15 53h90v6a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0a5.6 5.6 0 0 1-11.25 0Z"/>
+      <path class="lit" d="M27 92V75a10 10 0 0 1 20 0v17Z"/>
+      <path class="door" d="M63 94V76a8.5 8.5 0 0 1 17 0v18Z"/>
+      <circle class="wall" cx="60" cy="33" r="8.5"/>
+      <path class="ink" d="M55.5 29.5h9l-1.2 7.5a2 2 0 0 1-2 1.7h-2.6a2 2 0 0 1-2-1.7Z"/>
+      <path class="mint-line" d="M62 29.5 64.5 25"/>
+    </g>
+    <path class="frame" d="M37 75v17M27.5 83h19"/>`,
+  market: `
+    <g filter="url(#cityPaper)">
+      <path class="wood" d="M20 40h4v54h-4zM96 40h4v54h-4z"/>
+      <rect class="crate" x="15" y="70" width="90" height="24" rx="2"/>
+    </g>
+    <path class="plank" d="M15 78h90M15 86h90"/>
+    <g filter="url(#cityPaper)">
+      <path class="spot" d="M8 44 21 23h78l13 21Z"/>
+      <path class="stripe" d="M33 23h12l-2 21H29zM57 23h12l1 21H56zM81 23h12l5 21H84z"/>
+      <path class="spot" d="M8 43h104v3a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0a6.5 6.5 0 0 1-13 0Z"/>
+    </g>
+    <g filter="url(#cityPaper)">
+      <rect class="crate-d" x="21" y="59" width="22" height="11" rx="1.5"/>
+      <rect class="crate-d" x="49" y="61" width="22" height="9" rx="1.5"/>
+      <rect class="crate-d" x="77" y="59" width="22" height="11" rx="1.5"/>
+      <circle cx="26" cy="57" r="3.4" fill="#ffad66"/><circle cx="32" cy="56" r="3.4" fill="#ff9a5c"/><circle cx="38" cy="57" r="3.4" fill="#ffb877"/>
+      <circle cx="54" cy="59" r="3.2" fill="#9fd38a"/><circle cx="60" cy="58" r="3.2" fill="#8cc97b"/><circle cx="66" cy="59" r="3.2" fill="#a8db92"/>
+      <circle cx="82" cy="57" r="3.3" fill="#ff7f8f"/><circle cx="88" cy="56" r="3.3" fill="#f06d82"/><circle cx="94" cy="57" r="3.3" fill="#ff8f9e"/>
+    </g>`,
+  bakery: `
+    <circle class="smoke" cx="82" cy="7" r="3.6"/><circle class="smoke" cx="88" cy="3" r="2.6"/>
+    <g filter="url(#cityPaper)">
+      <rect class="brick" x="75" y="11" width="11" height="24"/>
+      <path class="spot" d="M24 41q0-14 12-14q0-13 24-13t24 13q12 0 12 14Z"/>
+      <rect class="wall" x="26" y="39" width="68" height="55" rx="2"/>
+    </g>
+    <g filter="url(#cityPaper)">
+      <circle class="lit" cx="60" cy="29" r="5"/>
+      <rect class="lit" x="31" y="60" width="31" height="22" rx="3"/>
+      <ellipse class="bread" cx="40" cy="78" rx="5.5" ry="3"/><ellipse class="bread" cx="53" cy="78" rx="5.5" ry="3"/>
+      <path class="door" d="M69 94V72a7.5 7.5 0 0 1 15 0v22Z"/>
+      <path class="ink-line" d="M94 47h13M104 47v4"/>
+      <path class="bread" d="M96 56c3-4 12-6 16-3 1 3-8 8-14 8-3 0-3-2-2-5Z"/>
+      <path class="crumb" d="M101 55l2 2M105 54l2 2M109 53.5l1.6 1.8"/>
+    </g>`,
+  flower: `
+    <g filter="url(#cityPaper)">
+      <path class="spot" d="M21 45q0-27 39-27t39 27Z"/>
+      <rect class="wall" x="24" y="43" width="72" height="51" rx="2"/>
+    </g>
+    <g filter="url(#cityPaper)">
+      <path class="lit" d="M32 73V62a11 11 0 0 1 22 0v11Z"/>
+      <path class="door mint-door" d="M65 94V71a8 8 0 0 1 16 0v23Z"/>
+      <rect class="box" x="29" y="73" width="28" height="6" rx="1.5"/>
+      <circle cx="33" cy="71" r="2.8" fill="#ff8fb2"/><circle cx="38.5" cy="70" r="2.8" fill="#ffd06e"/><circle cx="44" cy="71" r="2.8" fill="#c3a3e0"/><circle cx="49.5" cy="70" r="2.8" fill="#fff4f0"/><circle cx="54" cy="71" r="2.6" fill="#ff8fb2"/>
+      <path class="pot" d="M85 86h9l-1.4 8h-6.2zM55 86h9l-1.4 8h-6.2z"/>
+      <circle class="leafy" cx="89.5" cy="82" r="5"/><circle class="leafy" cx="59.5" cy="82" r="5"/>
+      <circle cx="88" cy="80" r="1.8" fill="#ff8fb2"/><circle cx="61" cy="80.5" r="1.8" fill="#ffd06e"/>
+      <circle cx="35" cy="35" r="2.4" fill="#fff4f0"/><circle cx="48" cy="26" r="2.4" fill="#ffd06e"/><circle cx="72" cy="26" r="2.4" fill="#ff8fb2"/><circle cx="85" cy="35" r="2.4" fill="#fff4f0"/>
+    </g>
+    <path class="frame" d="M43 73V51M32 64h22"/>`,
+  airclub: `
+    <g filter="url(#cityPaper)">
+      <path class="spot" d="M7 94V62a39 31 0 0 1 78 0v32Z"/>
+    </g>
+    <path class="rib" d="M26 94V44M46 94V31M66 94V44"/>
+    <g filter="url(#cityPaper)">
+      <path class="wall" d="M23 94V69h46v25Z"/>
+      <rect class="wall" x="88" y="55" width="12" height="39"/>
+      <rect class="lit" x="85" y="46" width="18" height="10" rx="2"/>
+      <path class="spot-d" d="M83 46h22l-3.5-5h-15Z"/>
+      <path class="pole" d="M111 94V19"/>
+      <path class="sock" d="m111.5 21 8 2v7l-8 2Z"/>
+      <path class="sock-band" d="M114.3 21.8v9.4M117.2 22.6v7.8"/>
+    </g>
+    <path class="plank" d="M23 75h46M23 81h46M23 87h46M46 69v25"/>`,
+  home: `
+    <circle class="smoke" cx="77" cy="16" r="3"/><circle class="smoke" cx="82" cy="11" r="2.2"/>
+    <g filter="url(#cityPaper)">
+      <rect class="brick" x="71" y="22" width="9" height="20"/>
+      <path class="spot" d="M27 53 60 20l33 33Z"/>
+      <rect class="wall" x="33" y="51" width="54" height="43" rx="2"/>
+      <circle class="tree" cx="105" cy="67" r="10"/>
+      <rect class="wood" x="103.6" y="74" width="3" height="20"/>
+    </g>
+    <g filter="url(#cityPaper)">
+      <circle class="lit" cx="60" cy="40" r="4.6"/>
+      <rect class="lit" x="38" y="60" width="12" height="12" rx="2"/>
+      <rect class="lit" x="70" y="60" width="12" height="12" rx="2"/>
+      <path class="door rose-door" d="M53 94V77a7 7 0 0 1 14 0v17Z"/>
+      <path class="heart" d="M60 84.5s-3.6-2.2-3.6-4.4c0-1.2.9-2 1.9-2 .8 0 1.4.4 1.7 1 .3-.6.9-1 1.7-1 1 0 1.9.8 1.9 2 0 2.2-3.6 4.4-3.6 4.4Z"/>
+      <path class="fence" d="M4 86h25M8 80v14M15 80v14M22 80v14"/>
+    </g>
+    <path class="frame" d="M44 60v12M38 66h12M76 60v12M70 66h12"/>`,
+};
+
 function citySlotsHtml(slotsLeft: number): string {
   return `<span class="city-slots" aria-label="还剩 ${slotsLeft} 段傍晚时光">${Array.from(
     { length: CITY_EVENING_SLOTS },
@@ -596,6 +919,13 @@ function travelStars(stars: number): string {
   return starRow(Math.max(0, Math.min(3, stars)) / 3);
 }
 
+function travelPips(mini: TravelMiniView, overLabel?: string): string {
+  return Array.from({ length: mini.tapsNeeded }, (_, i) => {
+    const grade = mini.grades[i];
+    return `<i class="${finishGradeClass(grade)}" title="${grade ? finishWord(grade, overLabel) : '等待'}">${icon(grade ? 'check' : 'sparkle')}</i>`;
+  }).join('');
+}
+
 export class Screens {
   private actions: UiActions;
   private screenRoot: HTMLElement;
@@ -609,12 +939,14 @@ export class Screens {
   private deliveryRoot: HTMLElement;
   private hudCache: Record<string, string> = {};
   private currentCraft: CraftView | null = null;
-  private shakePointer: HTMLElement | null = null;
-  private shakeZone = 0.11;
-  private travelPointer: HTMLElement | null = null;
+  /** DOM refs of the live finish stage; re-queried whenever the stage is re-rendered. */
+  private finishEls: FinishEls | null = null;
+  /** Pointer holding a finish press button down, and which press it started. */
+  private finishPress: { pointerId: number; action: 'shakeTap' | 'travelTimingTap' } | null = null;
   private notebookData: NotebookView | null = null;
   private notebookTab: NotebookTab = 'orders';
   private soundEnabled = true;
+  private musicEnabled = false;
   private coachText: string | null = null;
   private overlayFocus: HTMLElement | null = null;
   private dialogObserver: MutationObserver | null = null;
@@ -654,6 +986,8 @@ export class Screens {
     this.hudRoot.removeEventListener('click', this.onClickRoot);
     this.worldRoot.removeEventListener('click', this.onClickRoot);
     this.screenRoot.removeEventListener('pointerdown', this.onPointerDownRoot);
+    window.removeEventListener('pointerup', this.onPointerUpWindow);
+    window.removeEventListener('pointercancel', this.onPointerUpWindow);
     document.removeEventListener('keydown', this.onFocusKeyDown);
     this.deliveryRoot.remove();
     for (const entry of this.bubbles.values()) entry.el.remove();
@@ -683,14 +1017,6 @@ export class Screens {
             <span class="shift-icon">${icon('clock')}</span>
             <span class="shift-copy"><small>营业剩余</small><b data-hud="time">02:35</b></span>
           </div>
-          <div class="goal-board">
-            <div class="goal-line">
-              <span>今日营收</span>
-              <b data-hud="revenue">¥0</b>
-              <span class="goal-target" data-hud="goal">/ ¥90</span>
-            </div>
-            <div class="goal-track"><span data-hud="fill"></span><i class="goal-spark">${icon('sparkle')}</i></div>
-          </div>
         </div>
         <div class="hud-actions">
           <div class="hud-pill coin-pill">${icon('coin')}<b data-hud="coins">0</b></div>
@@ -704,6 +1030,22 @@ export class Screens {
           <button type="button" class="icon-btn hud-icon" data-action="openPause" aria-label="暂停营业">
             ${icon('pause')}
           </button>
+        </div>
+        <i class="hud-break" aria-hidden="true"></i>
+        <div class="hud-goals">
+          <div class="goal-board">
+            <div class="goal-line">
+              <span>今日营收</span>
+              <b data-hud="revenue">¥0</b>
+              <span class="goal-target" data-hud="goal">/ ¥90</span>
+            </div>
+            <div class="goal-track"><span data-hud="fill"></span><i class="goal-spark">${icon('sparkle')}</i></div>
+          </div>
+          <div class="hud-challenge is-hidden" data-hud="challenge" role="status">
+            <span class="challenge-badge">${icon('trophy')}</span>
+            <span class="challenge-copy"><small>每日小目标</small><b data-hud="challenge-label"></b></span>
+            <span class="challenge-count" data-hud="challenge-count"></span>
+          </div>
         </div>
       </div>
       <div class="combo-pill" data-hud="combo">
@@ -736,6 +1078,16 @@ export class Screens {
     });
     this.screenRoot.querySelectorAll<HTMLElement>('[data-sound-label]').forEach((el) => {
       el.textContent = enabled ? '音效：开' : '音效：关';
+    });
+  }
+
+  setMusic(enabled: boolean): void {
+    this.musicEnabled = enabled;
+    this.screenRoot.querySelectorAll<HTMLElement>('[data-music-icon]').forEach((el) => {
+      el.innerHTML = icon(enabled ? 'music' : 'musicOff');
+    });
+    this.screenRoot.querySelectorAll<HTMLElement>('[data-music-label]').forEach((el) => {
+      el.textContent = enabled ? '音乐：开' : '音乐：关';
     });
   }
 
@@ -833,6 +1185,37 @@ export class Screens {
       this.setSound(state.sound);
       this.hudCache.sound = String(state.sound);
     }
+    const progress = state.challenge;
+    const challenge = progress
+      ? `${progress.challenge.short}|${progress.value}|${progress.challenge.target}|${progress.done}|${progress.failed}`
+      : '';
+    if (this.hudCache.challenge !== challenge) {
+      const chip = this.hudRoot.querySelector<HTMLElement>('[data-hud="challenge"]');
+      if (chip) {
+        chip.classList.toggle('is-hidden', !progress);
+        if (progress) {
+          const { short, label, target } = progress.challenge;
+          const labelEl = chip.querySelector<HTMLElement>('[data-hud="challenge-label"]');
+          const countEl = chip.querySelector<HTMLElement>('[data-hud="challenge-count"]');
+          if (labelEl) labelEl.textContent = short;
+          if (countEl) {
+            countEl.innerHTML = progress.done
+              ? `${icon('check')}达成`
+              : progress.failed
+                ? '没守住'
+                : `${Math.min(progress.value, target)}<i>/</i>${target}`;
+          }
+          chip.classList.toggle('is-done', progress.done);
+          chip.classList.toggle('is-failed', progress.failed && !progress.done);
+          chip.setAttribute(
+            'aria-label',
+            `每日小目标：${label}，${progress.done ? '已达成' : progress.failed ? '今天没守住' : `进度 ${progress.value}/${target}`}`,
+          );
+          chip.title = label;
+        }
+      }
+      this.hudCache.challenge = challenge;
+    }
     this.setCoach(state.coach);
   }
 
@@ -907,7 +1290,7 @@ export class Screens {
         entry = { el, signature: '' };
         this.bubbles.set(view.order.id, entry);
       }
-      const signature = `${view.order.accepted ? 'a' : 'n'}|${view.order.vip}|${view.order.rush}|${view.order.drinkId}|${view.order.request.ice}|${view.order.request.sugar}|${view.order.request.size}|${view.order.request.topping}`;
+      const signature = `${view.order.accepted ? 'a' : 'n'}|${view.order.kind}|${view.order.vip}|${view.order.rush}|${view.order.drinkId}|${view.order.request.ice}|${view.order.request.sugar}|${view.order.request.size}|${view.order.request.topping}`;
       if (entry.signature !== signature) {
         entry.el.innerHTML = this.bubbleMarkup(view);
         entry.signature = signature;
@@ -966,17 +1349,18 @@ export class Screens {
         </span>
       `;
     }
+    const special = order.kind !== 'menu';
     return `
-      <span class="bubble-inner">
+      <span class="bubble-inner ${special ? `is-${order.kind}` : ''}">
         <span class="bubble-tail"></span>
         <span class="bubble-top">
-          ${miniCup(drink, 'bubble-cup')}
+          ${special || !view.revealName ? `<span class="bubble-wish-mark">${icon(order.kind === 'wish' ? 'heartWish' : order.kind === 'usual' ? 'notebook' : 'bubble')}</span>` : miniCup(drink, 'bubble-cup')}
           <span class="bubble-name">${customer.name}${order.vip ? `<em>${icon('crown')}</em>` : ''}</span>
           ${order.rush ? `<span class="bubble-rush">${icon('bolt')} 加急</span>` : ''}
           <span class="bubble-wait">${icon('clock')}<span class="patience-time">${Math.ceil(order.patience)}s</span></span>
         </span>
-        <span class="bubble-hint">“${drink.tagline}”</span>
-        <span class="bubble-chips">${reqChips(order.request, categoryOf(drink))}</span>
+        <span class="bubble-hint">“${askLine(order, drink, view.revealName)}”</span>
+        <span class="bubble-chips">${askChips(order, drink)}</span>
         <span class="bubble-cta">${icon('bubble')} 点开点单</span>
       </span>
     `;
@@ -1055,10 +1439,10 @@ export class Screens {
         <span class="delivery-time" data-delivery-time>${Math.ceil(order.patience)}s</span>
       </div>
       <div class="delivery-card-body">
-        ${miniCup(drink, 'delivery-cup')}
+        ${view.revealName ? miniCup(drink, 'delivery-cup') : `<span class="bubble-wish-mark">${icon('delivery')}</span>`}
         <div class="delivery-copy">
-          <b>${drink.name}</b>
-          <small>${customer.name} · ${CATEGORY_META[cat].label} · ${info?.packaging.length ?? 0} 件打包</small>
+          <b>${view.revealName ? drink.name : `“${drink.tagline}”`}</b>
+          <small>${customer.name} · ${CATEGORY_META[cat].label} · 打包 ${info?.packaging.length ?? 0} 件</small>
           <p>“${info?.note ?? drink.tagline}”</p>
         </div>
         <em class="delivery-fee">${icon('coin')}¥${info?.fee ?? 0}</em>
@@ -1075,7 +1459,7 @@ export class Screens {
   clearScreen() {
     this.screenRoot.innerHTML = '';
     this.currentCraft = null;
-    this.shakePointer = null;
+    this.finishEls = null;
     this.notebookData = null;
   }
 
@@ -1095,6 +1479,7 @@ export class Screens {
             <div class="title-top-actions">
               <span class="sticker-chip">${icon('leaf')} 第 ${save.day} 天 · ${theme.name}</span>
               <button type="button" class="icon-btn paper sound-toggle" data-action="toggleSound" data-sound-icon aria-label="切换音效">${icon('sound')}</button>
+              <button type="button" class="icon-btn paper sound-toggle" data-action="toggleMusic" data-music-icon aria-label="切换音乐">${icon('musicOff')}</button>
             </div>
           </header>
 
@@ -1175,6 +1560,7 @@ export class Screens {
     `;
     this.setSound(save.sound);
     this.soundEnabled = save.sound;
+    this.setMusic(save.music);
   }
 
   showDayIntro(view: DayIntroView) {
@@ -1218,16 +1604,23 @@ export class Screens {
                   </div>`
                 : ''
             }
-            <div class="day-storefront">
-              <div class="day-door" aria-hidden="true">
-                <span class="day-door-awning"></span>
-                <span class="day-door-frame"><i class="day-door-glass"></i><i class="day-door-handle"></i></span>
-                <span class="day-door-mat"></span>
-                <span class="day-door-sign is-closed"><i class="sign-string"></i><b>休息中</b><small>CLOSED</small></span>
+            <div class="day-pair">
+              <div class="day-storefront">
+                <div class="day-door" aria-hidden="true">
+                  <span class="day-door-awning"></span>
+                  <span class="day-door-frame"><i class="day-door-glass"></i><i class="day-door-handle"></i></span>
+                  <span class="day-door-mat"></span>
+                  <span class="day-door-sign is-closed"><i class="sign-string"></i><b>休息中</b><small>CLOSED</small></span>
+                </div>
+                <div class="day-door-copy">
+                  <span>${icon('door')} 店门口 · 翻牌开门</span>
+                  <p>木牌还翻在「休息中」，翻过来客人就会进门。</p>
+                </div>
               </div>
-              <div class="day-door-copy">
-                <span>${icon('door')} 店门口 · 翻牌开门</span>
-                <p>门边的木牌还翻在「休息中」。翻到「营业中」，第一位客人就会推门进来。</p>
+              <div class="day-challenge">
+                <span class="day-challenge-icon">${icon('trophy')}</span>
+                <div><small>每日小目标 · ${theme.name}</small><b>${config.challenge.label}</b></div>
+                <em>完成多领 ¥${config.challenge.reward}<small>三星需要它</small></em>
               </div>
             </div>
             ${
@@ -1262,15 +1655,12 @@ export class Screens {
   }
 
   showOrderSlip(view: OrderSlipView) {
-    const { order, customer, drink, recipes, tutorial } = view;
-    const cat = categoryOf(drink);
+    const { order, customer, drink, recipes, tutorial, revealName } = view;
     const delivery = order.channel === 'delivery';
     const info = order.delivery;
-    const packItems = (info?.packaging ?? [])
-      .map((id) => PACKAGING_META[id])
-      .filter((meta) => !!meta)
-      .map((meta) => `<i style="--pack:${meta.color}">${icon(meta.icon)}${meta.label}</i>`)
-      .join('');
+    const fits = order.kind === 'wish' ? wishCandidates(order.wishTags ?? [], recipes, order.request.ice).length : 0;
+    const askTitle =
+      order.kind === 'wish' ? '常客的心愿…' : order.kind === 'usual' ? '常客说…' : delivery ? '这一份，要送到…' : '客人想喝一杯…';
     this.screenRoot.innerHTML = `
       <div class="screen overlay-screen order-screen">
         <div class="scrim"></div>
@@ -1280,7 +1670,7 @@ export class Screens {
             <div class="slip-tag ${delivery ? 'is-delivery' : ''}">${delivery ? `${icon('delivery')} 外卖订单 · ${info?.address ?? '街角'}` : `${icon('bubble')} 第 ${order.seat + 1} 桌 · 新点单`}</div>
             <div class="slip-badges">${badges(order)}</div>
           </header>
-          ${tutorial ? `<div class="tutorial-note">${icon('sparkle')} 和客人的形容对一对配方，再去右边找找看。</div>` : ''}
+          ${tutorial ? `<div class="tutorial-note">${icon('sparkle')} 看看客人想喝哪一杯、有什么特别要求，再记下来。</div>` : ''}
           <div class="slip-grid">
             <section class="slip-customer">
               <div class="portrait-card" style="--accent:${customer.colors.accent};--coat:${customer.colors.coat}">
@@ -1295,18 +1685,21 @@ export class Screens {
                 <span class="pin"></span>
                 <p class="customer-quote">“${customer.quote}”</p>
                 <div class="slip-drink-line">
-                  ${catBadge(drink)}
-                  <h3>${delivery ? '这一份，要送到…' : '客人想喝一杯…'}</h3>
-                  <span>${drink.name}<small>${drink.latin}</small></span>
+                  ${order.kind === 'menu' ? (revealName ? catBadge(drink) : '') : `<span class="cat-badge is-${order.kind}">${icon(order.kind === 'wish' ? 'heartWish' : 'notebook')}${order.kind === 'wish' ? '心愿单' : '老样子'}</span>`}
+                  <h3>${askTitle}</h3>
+                  ${order.kind === 'menu' && revealName ? `<span>${drink.name}<small>${drink.latin}</small></span>` : ''}
                 </div>
-                <p class="order-hint">“${drink.tagline}”</p>
+                <p class="order-hint">“${order.kind === 'menu' ? drink.tagline : askLine(order, drink, revealName)}”</p>
                 ${
-                  order.wish
-                    ? `<div class="wish-note">${icon('heartWish')}<div><span>常客的手写心愿</span><p>“${order.wish}”</p></div></div>`
-                    : ''
+                  order.kind === 'wish'
+                    ? `<div class="wish-note">${icon('heartWish')}<div><span>同时带有这两种味道就算对</span><p>${tagChips(order.wishTags ?? [])}<em>手账里有 ${fits} 杯符合${order.request.ice === 'hot' ? ' · 要热的，只能选茶饮' : ''} · 小料跟着所选饮品</em></p></div></div>`
+                    : order.kind === 'usual'
+                      ? `<div class="wish-note is-usual">${icon('notebook')}<div><span>Ta 上次完美出杯的那杯</span><p>记在小本子「常客」页，调制时「配方速查」里也翻得到。</p></div></div>`
+                      : order.kind === 'menu' && !revealName
+                        ? `<p class="order-name-hint">${icon('sparkle')} 客人只说了形容，对一对右边的配方手账吧。</p>`
+                        : ''
                 }
-                <div class="req-title">${icon('bell')} 特别要求</div>
-                <div class="req-chips">${reqChips(order.request, cat)}</div>
+                ${order.kind === 'usual' ? '' : `<div class="req-title">${icon('bell')} 特别要求</div><div class="req-chips">${askChips(order, drink)}</div>`}
                 ${
                   delivery
                     ? `<div class="slip-delivery">
@@ -1316,7 +1709,7 @@ export class Screens {
                           <span><small>配送费</small><b>¥${info?.fee ?? 0}</b><em>平台补贴</em></span>
                         </div>
                         <p class="delivery-message">${icon('chat')} 客人留言：“${info?.note ?? '谢谢你～'}”</p>
-                        <div class="slip-pack"><span>${icon('delivery')} 出杯后还要打包 ${info?.packaging.length ?? 0} 件</span><div>${packItems}</div></div>
+                        <div class="slip-pack"><span>${icon('delivery')} 出杯后要打包 ${info?.packaging.length ?? 0} 件：照品类挑包材，留言里的要求也别忘了。</span></div>
                       </div>
                       <p class="wait-note is-delivery">${icon('clock')} 骑手已经在路上，取餐倒计时现在就开始啦。</p>`
                     : `<p class="wait-note">${icon('clock')} 客人的耐心从到店起就在倒数，快记下订单吧。</p>`
@@ -1336,6 +1729,7 @@ export class Screens {
                       <div class="recipe-mini-copy">
                         <div class="recipe-mini-title"><b>${recipe.name}</b>${catBadge(recipe, 'is-mini')}<em>¥${recipe.price}</em></div>
                         <p>${recipe.tagline}</p>
+                        <div class="taste-chips">${tagChips(recipe.tags, 'is-mini')}</div>
                         <div class="base-chips">${baseChips(recipe)}</div>
                       </div>
                     </article>`,
@@ -1345,7 +1739,7 @@ export class Screens {
             </section>
           </div>
           <footer class="slip-actions">
-            <span class="slip-tip">${icon('recipe')} ${delivery ? '外卖也按同一份 7 项配方调制' : '茶底、奶和风味写在配方里'}</span>
+            <span class="slip-tip">${icon('recipe')} 调制时先选杯，配方会自动填好</span>
             <div class="slip-buttons">
               <button type="button" class="btn btn-ghost" data-action="closeOverlay">再想想</button>
               <button type="button" class="btn btn-primary btn-big" data-action="acceptOrder" data-id="${order.id}">
@@ -1360,12 +1754,28 @@ export class Screens {
   }
 
   showChat(view: ChatView) {
-    const { customer, order, drink, replyIndex } = view;
-    const chat = customer.chat;
-    if (!chat) return;
+    const { customer, order, drink, chat, replyIndex, liked } = view;
     const cat = categoryOf(drink);
     const replied = replyIndex !== null;
     const option = replied ? chat.options[replyIndex] : null;
+    // Never reveal more than the order slip does: no drink name or cup here.
+    const side =
+      order.kind === 'usual'
+        ? `<span class="chat-side-icon">${icon('heartWish')}</span>
+          <b>还是老样子</b>
+          <p>上次那一杯，小本子「常客」页记着。</p>
+          <small>同一款，冰量、糖度、杯型和小料也照旧</small>`
+        : order.kind === 'wish'
+          ? `<span class="chat-side-icon">${icon('heartWish')}</span>
+            <b>今天的心愿</b>
+            <p>想喝一杯${wishText(order.wishTags ?? [])}</p>
+            <div class="req-chips">${reqChips(order.request, cat, ['ice', 'sugar', 'size'])}</div>
+            <small>两个口味都对上的饮品，都算数</small>`
+          : `<span class="chat-side-icon">${icon('notebook')}</span>
+            <b>便签上写着</b>
+            <p>“${drink.tagline}”</p>
+            <div class="req-chips">${reqChips(order.request, cat)}</div>
+            <small>选杯时，照着形容认出这一杯</small>`;
     this.screenRoot.innerHTML = `
       <div class="screen overlay-screen chat-screen cat-${cat}">
         <div class="scrim"></div>
@@ -1378,12 +1788,12 @@ export class Screens {
           <div class="chat-stage">
             <div class="chat-portrait" style="--accent:${customer.colors.accent};--coat:${customer.colors.coat}">
               <span class="chat-halo"></span>
-              ${portraitImg(customer, replied ? 'happy' : 'smile', 'chat-portrait-img')}
+              ${portraitImg(customer, replied && liked ? 'happy' : 'smile', 'chat-portrait-img')}
               <div class="chat-portrait-plate">
                 <b>${customer.name}</b>
                 <small>${customer.title}</small>
               </div>
-              <span class="chat-mood">${icon('heartWish')} 心情很好</span>
+              <span class="chat-mood">${icon('heartWish')} ${replied && liked ? '开心得眯起眼' : '心情很好'}</span>
             </div>
             <div class="chat-dialogue">
               <div class="chat-bubble">
@@ -1397,7 +1807,11 @@ export class Screens {
                       <span class="chat-speaker">${customer.name}<small>${customer.latin}</small></span>
                       <p>${option.reply}</p>
                     </div>
-                    <div class="chat-reward">${icon('heartWish')} 常客好感 +1 <em>小费加成 +8%</em></div>
+                    ${
+                      liked
+                        ? `<div class="chat-reward is-liked">${icon('heartWish')} Ta 很喜欢这句 <em>好感 +1 · 小费 +10%</em></div>`
+                        : `<div class="chat-reward is-plain">${icon('bubble')} Ta 笑了笑 <em>小费 +4%</em></div>`
+                    }
                     <button type="button" class="btn btn-primary btn-big chat-go" data-action="finishChat">
                       ${icon('shaker')} 去调这杯 ${icon('arrow')}
                     </button>`
@@ -1410,20 +1824,15 @@ export class Screens {
                         )
                         .join('')}
                     </div>
-                    <p class="chat-hint">${icon('clock')} 闲聊不会消耗营业时间，也不会让耐心变少。挑一句真心话就好。</p>`
+                    <p class="chat-hint">${icon('clock')} 聊天时营业时间和客人的耐心都照常在走，挑一句真心话，聊完就去调吧。</p>`
               }
             </div>
             <aside class="chat-side">
-              ${miniCup(drink, 'chat-cup')}
-              <b>${drink.name}</b>
-              ${catBadge(drink)}
-              <p>“${drink.tagline}”</p>
-              <div class="req-chips">${reqChips(order.request, cat)}</div>
-              <small>${order.wish ? `${icon('heartWish')} ${order.wish}` : '调饮时营业计时会暂停'}</small>
+              ${side}
             </aside>
           </div>
           <footer class="chat-foot">
-            <span>${icon('leaf')} 一句好好回答，会让这杯更甜一点。</span>
+            <span>${icon('leaf')} 说中 Ta 的心意，这杯的小费会更多一点。</span>
             <span>${icon('notebook')} 订单已经记在小本子里</span>
           </footer>
         </article>
@@ -1434,19 +1843,33 @@ export class Screens {
 
   showCraft(view: CraftView) {
     this.currentCraft = view;
-    this.shakeZone = view.shake?.zone ?? 0.11;
-    const { order, customer, drink, recipes, tutorialHint } = view;
+    const { order, customer, drink, orderDrink, chosen, recipes, tutorialHint } = view;
     const cat = categoryOf(drink);
     const catMeta = CATEGORY_META[cat];
     const finish = FINISH_META[drink.finish];
-    const needed = drink.finish === 'blend' ? 2 : 3;
     const delivery = order.channel === 'delivery';
-    const unit = finishUnit(drink.finish);
-    const zone = (view.shake?.zone ?? 0.11) * 100;
-    const zoneLeft = 50 - zone;
     const packedAll = view.packaging?.allPacked ?? true;
+    const groupMarkup = (group: (typeof SELECTION_GROUPS)[number], index: number) => `<div class="ingredient-row">
+      <div class="row-label">
+        <span class="row-index">${pad2(index + 1)}</span>
+        <div><h4>${group.label}</h4><small>${group.latin}</small></div>
+      </div>
+      <div class="choice-list">
+        ${group.options
+          .map(
+            (option) => `<button type="button" class="choice" data-action="select" data-key="${group.key}" data-value="${option.id}" data-choice-key="${group.key}" data-choice-value="${option.id}" style="--swatch:${option.color};--swatch2:${option.color2 ?? option.color}" aria-pressed="false">
+              <span class="choice-icon">${ingredientIcon(option.icon)}</span>
+              <span class="choice-text"><b>${option.label}</b><small>${option.sub}</small></span>
+              <span class="choice-check">${icon('check')}</span>
+            </button>`,
+          )
+          .join('')}
+      </div>
+    </div>`;
+    const modifierGroups = SELECTION_GROUPS.filter((group) => MODIFIER_KEYS.includes(group.key));
+    const baseGroups = SELECTION_GROUPS.filter((group) => !MODIFIER_KEYS.includes(group.key));
     this.screenRoot.innerHTML = `
-      <div class="screen overlay-screen craft-screen cat-${cat}">
+      <div class="screen overlay-screen craft-screen ${chosen ? `cat-${cat}` : ''}">
         <div class="scrim"></div>
         <article class="craft-shell${tutorialHint ? ' has-tutorial' : ''}${delivery ? ' is-delivery' : ''}" data-step="${view.step}" role="dialog" aria-modal="true" aria-label="调制饮品">
           <header class="craft-head">
@@ -1459,9 +1882,10 @@ export class Screens {
               </div>
             </div>
             <div class="craft-request">
-              <span class="scribble-label">${icon('notebook')} 订单便签 ${catBadge(drink, 'is-mini')}</span>
-              <p class="craft-hint">“${drink.tagline}”</p>
-              <div class="req-chips">${reqChips(order.request, cat)}</div>
+              <span class="scribble-label">${icon('notebook')} 订单便签 ${order.kind === 'menu' ? (view.revealName ? catBadge(orderDrink, 'is-mini') : '') : badges(order)}</span>
+              <p class="craft-hint">“${askLine(order, orderDrink, view.revealName)}”</p>
+              ${order.kind === 'wish' ? `<div class="taste-chips">${tagChips(order.wishTags ?? [])}</div>` : ''}
+              <div class="req-chips">${askChips(order, orderDrink)}</div>
             </div>
             <div class="craft-head-actions">
               <button type="button" class="btn btn-paper btn-small" data-action="toggleRecipes">${icon('recipe')} 配方速查</button>
@@ -1478,14 +1902,18 @@ export class Screens {
                 <div class="step-track">
                   <span class="step-dot" data-step-dot="assemble"><i>1</i><b data-step-label="assemble">调制</b></span>
                   <span class="step-line"></span>
-                  <span class="step-dot" data-step-dot="shake"><i>2</i><b data-step-label="shake">${catMeta.finishLabel}</b></span>
+                  <span class="step-dot" data-step-dot="shake"><i>2</i><b data-step-label="shake">${chosen ? catMeta.finishLabel : '收尾'}</b></span>
                   <span class="step-line"></span>
                   <span class="step-dot" data-step-dot="ready"><i>3</i><b data-step-label="ready">${delivery ? '打包' : '出杯'}</b></span>
                 </div>
               </div>
               <div class="preview-caption">
-                <div>${miniCup(drink, 'preview-cup')}<span><b>${drink.name}</b>${catBadge(drink, 'is-mini')}<small>${drink.latin}</small></span></div>
-                <em>¥${drink.price}</em>
+                ${
+                  chosen
+                    ? `<div>${miniCup(chosen, 'preview-cup')}<span><b>${chosen.name}</b>${catBadge(chosen, 'is-mini')}<small>${chosen.latin}</small></span></div>
+                       <em>¥${chosen.price}</em>`
+                    : `<div><span class="preview-empty">${icon('plainCup')}</span><span><b>还没选杯</b><small>先在右边点一杯</small></span></div>`
+                }
               </div>
             </aside>
 
@@ -1493,73 +1921,40 @@ export class Screens {
               <section class="craft-step assemble-panel" data-panel="assemble">
                 <div class="panel-head">
                   <div>
-                    <span class="panel-kicker">STEP 1 · 调制 · ${catMeta.label.toUpperCase()}</span>
-                    <h3>把 7 项配方一项项选好</h3>
-                    <p>茶底、奶和风味藏在配方手账里，糖冰和小料看客人便签。</p>
+                    <span class="panel-kicker">STEP 1 · 选杯 · 调整</span>
+                    <h3>先选一杯，再照便签调整</h3>
+                    <p>点一杯，7 项配方自动填好；冰量、糖度、杯型和小料照客人说的改。</p>
                   </div>
                   <div class="selection-count"><b data-craft-count>0</b><span>/ 7 已选</span></div>
                 </div>
-                <div class="ingredient-scroll">
-                  ${SELECTION_GROUPS.map(
-                    (group, index) => `<div class="ingredient-row">
-                      <div class="row-label">
-                        <span class="row-index">${pad2(index + 1)}</span>
-                        <div><h4>${group.label}</h4><small>${group.latin}</small></div>
-                      </div>
-                      <div class="choice-list">
-                        ${group.options
-                          .map(
-                            (option) => `<button type="button" class="choice" data-action="select" data-key="${group.key}" data-value="${option.id}" data-choice-key="${group.key}" data-choice-value="${option.id}" style="--swatch:${option.color};--swatch2:${option.color2 ?? option.color}" aria-pressed="false">
-                              <span class="choice-icon">${ingredientIcon(option.icon)}</span>
-                              <span class="choice-text"><b>${option.label}</b><small>${option.sub}</small></span>
-                              <span class="choice-check">${icon('check')}</span>
-                            </button>`,
-                          )
-                          .join('')}
-                      </div>
-                    </div>`,
-                  ).join('')}
+                <div class="drink-picker" role="group" aria-label="选杯">
+                  ${recipes
+                    .map(
+                      (recipe) => `<button type="button" class="drink-pick" data-action="pickDrink" data-id="${recipe.id}" data-pick="${recipe.id}" aria-pressed="false" style="--drink:${recipe.color};--accent:${recipe.accent}">
+                        ${miniCup(recipe, 'pick-cup')}
+                        <span class="pick-copy">
+                          <b>${recipe.name}</b>
+                          <small>${CATEGORY_META[recipe.category].label} · ¥${recipe.price}</small>
+                          <span class="taste-chips">${tagChips(recipe.tags, 'is-mini')}</span>
+                        </span>
+                        <span class="choice-check">${icon('check')}</span>
+                      </button>`,
+                    )
+                    .join('')}
+                </div>
+                <div class="ingredient-scroll ${chosen ? '' : 'is-waiting'}">
+                  ${modifierGroups.map(groupMarkup).join('')}
+                  <div class="ingredient-divider">${icon('recipe')} 配方底 · 选杯后自动填好，一般不用改</div>
+                  ${baseGroups.map((group, index) => groupMarkup(group, modifierGroups.length + index)).join('')}
                 </div>
                 <div class="assemble-actions">
-                  <span class="craft-note">${icon('clock')} 调饮时，营业计时会暂停</span>
+                  <span class="craft-note">${icon('clock')} 调饮时，其他客人的耐心还在走</span>
                   <button type="button" class="btn btn-ghost" data-action="clearSelections">清空</button>
-                  <button type="button" class="btn btn-primary" data-action="goShake" data-craft-next disabled>${icon(finish.icon)} ${catMeta.finishVerb} ${icon('arrow')}</button>
+                  <button type="button" class="btn btn-primary" data-action="goShake" data-craft-next disabled>${chosen ? `${icon(finish.icon)} ${catMeta.finishVerb}` : '先选一杯'} ${icon('arrow')}</button>
                 </div>
               </section>
 
-              <section class="craft-step shake-panel finish-${drink.finish}" data-panel="shake" style="--cat:${catMeta.color}">
-                <div class="panel-head">
-                  <div>
-                    <span class="panel-kicker">STEP 2 · ${catMeta.finishLatin} · ${catMeta.finishLabel}</span>
-                    <h3>${finishTitle(drink)}</h3>
-                    <p>${finish.hint}</p>
-                  </div>
-                  <div class="shake-count"><b data-shake-count>0</b><span>/ ${needed}</span></div>
-                </div>
-                <div class="shake-visual">
-                  <div class="shaker-hero">${icon(finish.icon)}<i class="shaker-glow"></i></div>
-                  <div class="shake-mood">
-                    <span data-shake-label>准备好啦</span>
-                    <small>${catMeta.qualityLabel} · 越靠中心越好</small>
-                  </div>
-                  <div class="shake-sparkles"><i>${icon('sparkle')}</i><i>${icon('star')}</i><i>${icon('sparkle')}</i></div>
-                </div>
-                <div class="shake-meter">
-                  <div class="shake-track">
-                    <div class="shake-sweet" data-shake-zone style="left:${zoneLeft}%;width:${zone * 2}%"></div>
-                    <span class="shake-center"></span>
-                    <div class="shake-pointer" data-shake-pointer></div>
-                  </div>
-                  <div class="shake-scale"><span>${finish.scale[0]}</span><span>${finish.scale[1]}</span><span>${finish.scale[2]}</span></div>
-                </div>
-                <div class="shake-taps" data-shake-taps data-shake-needed="${needed}">
-                  ${Array.from({ length: needed }, (_, i) => `<span class="shake-slot" data-slot="${i}"><i>${icon('sparkle')}</i><b>第 ${i + 1} ${unit}</b><small>等待</small></span>`).join('')}
-                </div>
-                <div class="shake-actions">
-                  <button type="button" class="shake-button" data-action="shakeTap"><span>${finish.button}</span><small>SPACE / 点击</small></button>
-                  <button type="button" class="btn btn-primary btn-big is-hidden" data-action="finishShake" data-shake-finish>${icon('check')} ${catMeta.finishLabel}完成，${delivery ? '准备打包' : '准备出杯'}</button>
-                </div>
-              </section>
+              ${finishPanelMarkup(view.shake?.drink ?? drink, delivery, view.shake)}
 
               <section class="craft-step ready-panel" data-panel="ready">
                 <div class="ready-inner">
@@ -1578,7 +1973,7 @@ export class Screens {
                       ${delivery ? `${icon('delivery')} ${packedAll ? '打包好啦，交给骑手' : '还要打包一下'}` : `${icon('cup')} 送给 ${customer.name}`}
                     </button>
                   </div>
-                  ${delivery ? `<p class="ready-pack-note" data-pack-note>${icon('leaf')} 三项打包全部完成后，才能交给骑手。</p>` : ''}
+                  ${delivery ? `<p class="ready-pack-note" data-pack-note>${icon('leaf')} 需要的包材都装好、保温袋最后封口，才能交给骑手。</p>` : ''}
                 </div>
               </section>
             </div>
@@ -1594,7 +1989,15 @@ export class Screens {
               <div><span>配方手账</span><h3>今日可用配方</h3></div>
               <button type="button" class="icon-btn paper" data-action="toggleRecipes" aria-label="关闭配方">${icon('close')}</button>
             </header>
-            <p class="drawer-note">${icon('leaf')} 客人的糖冰和小料以订单便签为准。</p>
+            <section class="drawer-profile">
+              <div class="drawer-profile-head">
+                <span class="mini-portrait">${portraitImg(customer, 'smile')}</span>
+                <div><b>${customer.name} 的常客档案</b><small>好感 ${view.rapport} ${chatRapport(view.rapport)}</small></div>
+              </div>
+              <p>${icon('notebook')} ${view.last ? `上次完美出杯：${lastOrderLine(view.last.drink, view.last.recipe)}` : '还没有完美出杯的记录。'}</p>
+              <p>${icon('heartWish')} ${view.rapport >= RAPPORT_WISH ? `喜欢的味道：${tagChips(customer.taste.tags, 'is-mini')}` : '再熟一点，就知道 Ta 喜欢什么味道了。'}</p>
+            </section>
+            <p class="drawer-note">${icon('leaf')} 客人的冰量、糖度、杯型和小料以订单便签为准。</p>
             <div class="drawer-list">
               ${recipes
                 .map(
@@ -1603,6 +2006,7 @@ export class Screens {
                     <div>
                       <div class="drawer-recipe-title"><b>${recipe.name}</b>${catBadge(recipe, 'is-mini')}<em>¥${recipe.price}</em></div>
                       <p>${recipe.tagline}</p>
+                      <div class="taste-chips">${tagChips(recipe.tags, 'is-mini')}</div>
                       <div class="base-chips">${baseChips(recipe)}</div>
                     </div>
                   </article>`,
@@ -1634,13 +2038,10 @@ export class Screens {
     shell.dataset.step = view.step;
     const cat = categoryOf(view.drink);
     const catMeta = CATEGORY_META[cat];
-    const mode = view.shake?.mode ?? view.drink.finish;
-    const needed = view.shake?.tapsNeeded ?? (mode === 'blend' ? 2 : 3);
-    const unit = finishUnit(mode);
     const delivery = view.order.channel === 'delivery';
     const stepLabels: Record<CraftStep, string> = {
       assemble: '调制',
-      shake: catMeta.finishLabel,
+      shake: view.chosen ? catMeta.finishLabel : '收尾',
       ready: delivery ? '打包' : '出杯',
     };
     for (const label of this.screenRoot.querySelectorAll<HTMLElement>('[data-step-label]')) {
@@ -1668,48 +2069,44 @@ export class Screens {
     const countEl = this.screenRoot.querySelector<HTMLElement>('[data-craft-count]');
     if (countEl) countEl.textContent = String(count);
     const next = this.screenRoot.querySelector<HTMLButtonElement>('[data-craft-next]');
-    if (next) next.disabled = count < 7;
+    if (next) next.disabled = count < 7 || !view.chosen;
+    this.screenRoot.querySelectorAll<HTMLButtonElement>('[data-pick]').forEach((btn) => {
+      const picked = btn.dataset.pick === view.chosen?.id;
+      btn.classList.toggle('is-selected', picked);
+      btn.setAttribute('aria-pressed', String(picked));
+    });
 
     if (view.shake) {
-      this.shakeZone = view.shake.zone;
+      const shake = view.shake;
+      const mode = shake.drink.finish;
+      const unit = finishUnit(mode);
+      const panel = this.screenRoot.querySelector<HTMLElement>('[data-panel="shake"]');
+      if (panel && panel.dataset.finishMode !== mode) {
+        // The drink picked in 「选杯」 decides the finish game.
+        panel.outerHTML = finishPanelMarkup(shake.drink, delivery, shake);
+        this.finishEls = null;
+      }
       const countEl2 = this.screenRoot.querySelector<HTMLElement>('[data-shake-count]');
-      if (countEl2) countEl2.textContent = String(view.shake.taps);
-      const zone = this.screenRoot.querySelector<HTMLElement>('[data-shake-zone]');
-      if (zone) {
-        zone.style.left = `${50 - view.shake.zone * 100}%`;
-        zone.style.width = `${view.shake.zone * 200}%`;
-      }
+      if (countEl2) countEl2.textContent = String(shake.taps);
       const taps = this.screenRoot.querySelector<HTMLElement>('[data-shake-taps]');
-      if (taps) {
-        taps.innerHTML = Array.from({ length: needed }, (_, i) => {
-          const score = view.shake?.scores[i];
-          const cls = score === undefined ? '' : score >= 0.86 ? 'is-perfect' : score >= 0.62 ? 'is-good' : 'is-miss';
-          const hint =
-            score === undefined
-              ? i === view.shake!.taps
-                ? '瞄准中'
-                : '等待'
-              : `${scoreWord(score)} · ${Math.round(score * 100)}%`;
-          return `<span class="shake-slot ${cls}" data-slot="${i}"><i>${icon(score === undefined ? 'sparkle' : 'check')}</i><b>第 ${i + 1} ${unit}</b><small>${hint}</small></span>`;
-        }).join('');
-      }
+      if (taps) taps.innerHTML = finishSlots(shake, shake.tapsNeeded, unit);
       const label = this.screenRoot.querySelector<HTMLElement>('[data-shake-label]');
       if (label) {
-        label.textContent = view.shake.done
-          ? finishDoneLine(view.drink, view.shake.perfect)
-          : view.shake.taps === 0
+        label.textContent = shake.done
+          ? finishDoneLine(mode, shake.perfect)
+          : shake.taps === 0
             ? '准备好啦'
-            : `还差 ${Math.max(0, needed - view.shake.taps)} ${unit}`;
+            : `还差 ${Math.max(0, shake.tapsNeeded - shake.taps)} ${unit}`;
       }
       const shakeBtn = this.screenRoot.querySelector<HTMLButtonElement>('.shake-button');
       const finish = this.screenRoot.querySelector<HTMLElement>('[data-shake-finish]');
-      shell.classList.toggle('is-shake-done', view.shake.done);
-      if (shakeBtn) shakeBtn.disabled = view.shake.done;
-      finish?.classList.toggle('is-hidden', !view.shake.done);
+      shell.classList.toggle('is-shake-done', shake.done);
+      if (shakeBtn) shakeBtn.disabled = shake.done;
+      finish?.classList.toggle('is-hidden', !shake.done);
       const readyStars = this.screenRoot.querySelector<HTMLElement>('[data-ready-stars]');
-      if (readyStars) readyStars.innerHTML = starRow(view.shake.quality);
+      if (readyStars) readyStars.innerHTML = starRow(shake.quality);
       const quality = this.screenRoot.querySelector<HTMLElement>('[data-ready-quality]');
-      if (quality) quality.textContent = `${Math.round(view.shake.quality * 100)}%`;
+      if (quality) quality.textContent = `${Math.round(shake.quality * 100)}%`;
     }
 
     const readyRecipe = this.screenRoot.querySelector<HTMLElement>('[data-ready-recipe]');
@@ -1724,9 +2121,13 @@ export class Screens {
     }
 
     if (view.packaging) {
-      const done = view.packaging.items.filter((item) => item.packed).length;
       const progress = this.screenRoot.querySelector<HTMLElement>('[data-pack-progress]');
-      if (progress) progress.textContent = `${done} / ${view.packaging.items.length}`;
+      if (progress) progress.textContent = `需要 ${view.packaging.needed} 件 · 已装 ${view.packaging.done}`;
+      const wrong = this.screenRoot.querySelector<HTMLElement>('[data-pack-wrong]');
+      if (wrong) {
+        wrong.classList.toggle('is-hidden', view.packaging.wrong <= 0);
+        wrong.innerHTML = `${icon('heart')} 拿错 ${view.packaging.wrong} 次，打包分 −${view.packaging.wrong * 15}%`;
+      }
       for (const item of view.packaging.items) {
         const btn = this.screenRoot.querySelector<HTMLButtonElement>(`[data-pack-item="${item.id}"]`);
         if (!btn) continue;
@@ -1755,14 +2156,95 @@ export class Screens {
       const text = tutorial.querySelector<HTMLElement>('[data-craft-tutorial-text]');
       if (text && view.tutorialHint) text.textContent = view.tutorialHint;
     }
-
-    this.shakePointer = this.screenRoot.querySelector<HTMLElement>('[data-shake-pointer]');
   }
 
-  updateShakePointer(position: number) {
-    if (!this.shakePointer) return;
-    this.shakePointer.style.left = `${position * 100}%`;
-    this.shakePointer.classList.toggle('in-sweet', Math.abs(position - 0.5) <= this.shakeZone);
+  /** Per-frame draw of the live finish stage (craft panel or travel mini); no re-render. */
+  updateFinish(frame: FinishFrame) {
+    let els = this.finishEls;
+    if (!els || !els.stage.isConnected) {
+      const stage = this.screenRoot.querySelector<HTMLElement>(`[data-finish-stage][data-engine="${frame.engine}"]`);
+      if (!stage) return;
+      const container = stage.closest<HTMLElement>('[data-panel="shake"], .travel-timing') ?? stage;
+      els = {
+        stage,
+        press: container.querySelector<HTMLElement>('[data-finish-press]'),
+        notes: [...stage.querySelectorAll<HTMLElement>('[data-finish-note]')],
+        hit: stage.querySelector<HTMLElement>('[data-finish-hit]'),
+        hero: stage.querySelector<HTMLElement>('[data-finish-hero]'),
+        fill: stage.querySelector<HTMLElement>('[data-finish-fill]'),
+        band: stage.querySelector<HTMLElement>('[data-finish-band]'),
+        ghost: stage.querySelector<HTMLElement>('[data-finish-ghost]'),
+        scoop: stage.querySelector<HTMLElement>('[data-finish-scoop]'),
+        target: stage.querySelector<HTMLElement>('[data-finish-target]'),
+        pile: stage.querySelector<HTMLElement>('[data-finish-pile]'),
+        pointer: stage.querySelector<HTMLElement>('[data-finish-pointer]'),
+        zone: stage.querySelector<HTMLElement>('[data-finish-zone]'),
+        balls: -1,
+      };
+      this.finishEls = els;
+    }
+    els.stage.classList.toggle('is-hot', frame.hot);
+    els.stage.classList.toggle('is-done', frame.done);
+    switch (frame.engine) {
+      case 'rhythm': {
+        if (els.hit) {
+          els.hit.style.left = `${frame.hitX * 100}%`;
+          els.hit.style.setProperty('--ease', frame.ease.toFixed(2));
+        }
+        const notes = els.notes;
+        frame.notes.forEach((note, i) => {
+          const el = notes[i];
+          if (!el) return;
+          el.style.left = `${note.x * 100}%`;
+          const cls = `rhythm-note ${finishGradeClass(note.grade ?? undefined)}${note.grade ? ' is-scored' : ''}${note.x > 1.04 || note.x < -0.08 ? ' is-off' : ''}`;
+          if (el.className !== cls) el.className = cls;
+        });
+        break;
+      }
+      case 'hold':
+        if (els.fill) els.fill.style.width = `${frame.fill * 100}%`;
+        if (els.band) {
+          els.band.style.left = `${(frame.target - frame.band) * 100}%`;
+          els.band.style.width = `${frame.band * 200}%`;
+        }
+        if (els.ghost) {
+          els.ghost.classList.toggle('is-hidden', frame.ghost === null || frame.holding);
+          if (frame.ghost !== null) els.ghost.style.left = `${frame.ghost * 100}%`;
+        }
+        els.stage.classList.toggle('is-holding', frame.holding);
+        els.hero?.style.setProperty('--stir', frame.holding ? String(0.2 + frame.fill) : '0');
+        els.press?.classList.toggle('is-holding', frame.holding);
+        break;
+      case 'stack':
+        if (els.scoop) els.scoop.style.left = `${frame.scoopX * 100}%`;
+        if (els.target) {
+          els.target.style.left = `${(frame.top - frame.tolerance) * 100}%`;
+          els.target.style.width = `${frame.tolerance * 200}%`;
+          els.target.style.bottom = `calc(var(--cone-top) + ${frame.balls.length} * var(--ball-step))`;
+        }
+        if (els.pile && els.balls !== frame.balls.length) {
+          const fresh = els.balls >= 0 && frame.balls.length === els.balls + 1;
+          els.pile.innerHTML = frame.balls
+            .map(
+              (x, i) =>
+                `<i class="stack-ball${fresh && i === frame.balls.length - 1 ? ' is-new' : ''}" style="left:${x * 100}%;bottom:calc(var(--cone-top) + ${i} * var(--ball-step))"></i>`,
+            )
+            .join('');
+          els.balls = frame.balls.length;
+        }
+        els.scoop?.classList.toggle('is-hidden', frame.done);
+        break;
+      case 'pendulum':
+        if (els.pointer) {
+          els.pointer.style.left = `${frame.pointer * 100}%`;
+          els.pointer.classList.toggle('in-sweet', frame.hot);
+        }
+        if (els.zone) {
+          els.zone.style.left = `${(0.5 - frame.zone) * 100}%`;
+          els.zone.style.width = `${frame.zone * 200}%`;
+        }
+        break;
+    }
   }
 
   private toggleRecipeDrawer() {
@@ -1772,8 +2254,9 @@ export class Screens {
     this.screenRoot.querySelector('.craft-shell')?.classList.toggle('drawer-open', drawer.classList.contains('is-open'));
   }
 
-  showNotebook(view: NotebookView) {
+  showNotebook(view: NotebookView, tab?: NotebookTab) {
     this.notebookData = view;
+    if (tab) this.notebookTab = tab;
     this.screenRoot.innerHTML = `
       <div class="screen overlay-screen notebook-screen">
         <div class="scrim"></div>
@@ -1798,7 +2281,7 @@ export class Screens {
             </button>
           </div>
           <div class="notebook-page" data-notebook-page></div>
-          <footer class="notebook-foot">${icon('leaf')} 小提示：客人到店后耐心就开始倒计时；调饮、闲聊和翻本子时，时间会暂停。</footer>
+          <footer class="notebook-foot">${icon('leaf')} 小提示：客人到店后耐心就开始倒计时；翻本子、调饮和闲聊时，营业计时也不会停。</footer>
         </article>
       </div>
     `;
@@ -1824,12 +2307,13 @@ export class Screens {
                     <div class="mini-portrait">${portraitImg(customer, 'smile')}</div>
                     <div class="order-note-name">
                       <b>${customer.name}</b>
-                      <small>${order.channel === 'delivery' ? icon('delivery') : ''} ${orderPlace(order)} · ${drink.name}</small>
+                      <small>${order.channel === 'delivery' ? icon('delivery') : ''} ${orderPlace(order)}${order.kind === 'menu' && view.revealName ? ` · ${drink.name}` : ''}</small>
                     </div>
                     <div class="order-badges">${badges(order)}</div>
                   </div>
-                  <p class="order-note-hint">“${order.wish ?? drink.tagline}”</p>
-                  <div class="req-chips">${reqChips(order.request, categoryOf(drink))}</div>
+                  <p class="order-note-hint">“${order.kind === 'menu' ? drink.tagline : askLine(order, drink, view.revealName)}”</p>
+                  ${order.kind === 'wish' ? `<div class="taste-chips">${tagChips(order.wishTags ?? [])}</div>` : ''}
+                  <div class="req-chips">${askChips(order, drink)}</div>
                   <div class="patience-line">
                     <div class="patience-title"><span>${icon('clock')} ${order.channel === 'delivery' ? '骑手取餐' : '耐心'}</span><b>${Math.ceil(order.patience)}s</b></div>
                     <div class="patience-track"><span class="patience-fill" style="width:${Math.max(0, Math.min(100, (order.patience / Math.max(1, order.patienceMax)) * 100))}%"></span></div>
@@ -1857,6 +2341,7 @@ export class Screens {
                 <em>¥${drink.price}</em>
               </div>
               <p class="recipe-tagline">${drink.tagline}</p>
+              <div class="taste-chips">${tagChips(drink.tags, 'is-mini')}</div>
               <div class="recipe-attributes">
                 ${RECIPE_FIELDS.map(
                   (field) => `<div class="recipe-attribute">
@@ -1888,7 +2373,17 @@ export class Screens {
             </article>`;
           }
           const rapport = view.regulars[customer.id] ?? 0;
-          const hasWish = rapport >= 2;
+          const last = view.lastOrders[customer.id];
+          const lastDrink = last ? DRINKS_MAP[last.drinkId] : undefined;
+          const hasWish = rapport >= RAPPORT_WISH;
+          const stage =
+            rapport >= RAPPORT_USUAL
+              ? '会点「老样子」，也会说心愿'
+              : hasWish
+                ? '会说出想喝的味道'
+                : rapport >= 1
+                  ? '再熟一点…'
+                  : '刚刚认识';
           return `<article class="regular-card ${hasWish ? 'has-wish' : ''}">
             <div class="regular-photo">${portraitImg(customer, 'happy')}</div>
             <div class="regular-copy">
@@ -1896,9 +2391,12 @@ export class Screens {
               <small>${customer.title}</small>
               <p>“${customer.quote}”</p>
               <div class="regular-rapport">
-                <span>${icon('heartWish')} 常客好感</span>
+                <span>${icon('heartWish')} 好感 ${rapport}</span>
                 ${chatRapport(rapport)}
-                <em>${hasWish ? '会写下心愿' : rapport >= 1 ? '再熟一点...' : '刚刚认识'}</em>
+                <em>${stage}</em>
+              </div>
+              ${hasWish ? `<div class="regular-taste"><span>喜欢</span>${tagChips(customer.taste.tags, 'is-mini')}</div>` : ''}
+              <p class="regular-last">${icon('notebook')} ${last && lastDrink ? `上次：${lastOrderLine(lastDrink, last.recipe)}` : '还没有完美出杯的记录'}</p>
               </div>
             </div>
           </article>`;
@@ -1942,10 +2440,26 @@ export class Screens {
       return `<span class="match-field ${ok ? 'is-ok' : 'is-miss'}">
         <span class="match-state">${icon(ok ? 'check' : 'close')}</span>
         <small>${field.label}</small>
-        <b>${recipeValueLabelFor(cat, field.key, result.order.request[field.key])}</b>
+        <b>${recipeValueLabelFor(cat, field.key, result.target[field.key])}</b>
         ${ok ? '' : `<em>你用了 ${recipeValueLabelFor(cat, field.key, made[field.key])}</em>`}
       </span>`;
     }).join('');
+    const orderNote =
+      order.kind === 'wish' && result.wishMatched
+        ? `<div class="result-wish ${result.drinkOk ? 'is-ok' : 'is-miss'}">
+            ${icon('heartWish')}
+            <span>心愿：${(order.wishTags ?? [])
+              .map((tag, i) => `<i class="${result.wishMatched?.[i] ? 'is-ok' : 'is-miss'}">${TASTE_TAGS[tag].label}${result.wishMatched?.[i] ? ' ✓' : ' ✗'}</i>`)
+              .join('')}</span>
+            <b>${result.favorite ? '正中 Ta 的最爱！小费 +25%' : result.drinkOk ? '选对了味道 · 小费 +15%' : `这杯${drink.name}不太是 Ta 想要的味道`}</b>
+          </div>`
+        : order.kind === 'usual'
+          ? `<div class="result-wish ${result.perfect ? 'is-ok' : 'is-miss'}">
+              ${icon('notebook')}
+              <b>${result.perfect ? '你记得 Ta 的老样子 · 小费 +25%' : result.drinkOk ? '是这杯，不过细节和上次不一样' : '好像不是上次那杯呢'}</b>
+            </div>`
+          : '';
+    const rapportNote = result.rapportGain > 0 ? `<span class="result-rapport">${icon('heart')} 好感 +${result.rapportGain}</span>` : '';
 
     this.screenRoot.innerHTML = `
       <div class="screen overlay-screen result-screen ${tone} ${delivery ? 'is-delivery' : ''}">
@@ -1959,11 +2473,12 @@ export class Screens {
               ${delivery ? `<span class="result-channel">${icon('delivery')} 外卖</span>` : ''}
             </div>
             <div class="result-copy">
-              <span class="result-kicker">${delivery ? `${icon('delivery')} ${orderPlace(order)} · 外卖订单` : `第 ${order.seat + 1} 桌 · ${order.vip ? '贵宾订单' : order.rush ? '加急订单' : '堂食订单'}`} ${catBadge(drink, 'is-mini')}</span>
+              <span class="result-kicker">${delivery ? `${icon('delivery')} ${orderPlace(order)} · 外卖订单` : `第 ${order.seat + 1} 桌 · ${order.vip ? '贵宾订单' : order.rush ? '加急订单' : '堂食订单'}`} ${catBadge(drink, 'is-mini')} ${rapportNote}</span>
               <h2>${stamp}</h2>
               <p>${sub}</p>
               <blockquote>“${quote}”</blockquote>
               <span class="result-name">— ${delivery ? '外卖留言' : customer.name}</span>
+              ${orderNote}
             </div>
             <div class="result-stamp">
               <span>${icon(allPerfect ? 'star' : result.matches >= 5 ? 'sparkle' : 'heart')}</span>
@@ -1986,7 +2501,7 @@ export class Screens {
           <div class="result-meta">
             <span>当前金币 <b>${icon('coin')} ${view.coins}</b></span>
             <span>小店耐心 <b>${heartsHtml(view.hearts)}</b></span>
-            ${delivery ? `<span>打包完成 <b>${result.packagingScore * 100 >= 100 ? '全部装好' : '有遗漏'} (${Math.round(result.packagingScore * 100)}%)</b></span>` : ''}
+            ${delivery ? `<span>打包 <b>${result.packagingWrong > 0 ? `拿错 ${result.packagingWrong} 次` : '一次装对'} (${Math.round(result.packagingScore * 100)}%)</b></span>` : ''}
             <span>${delivery ? '外卖评价' : '完美出杯'} <b>${delivery ? (rating >= 3 ? '五星好评' : `${rating} 星`) : result.perfectShake ? `${catMeta.finishLabel}满分` : '继续加油'}</b></span>
           </div>
           <div class="result-doodle" aria-hidden="true">${cupDoodle(delivery ? '桃桃茶屋 · 外卖已送达' : '桃桃茶屋 · 谢谢惠顾')}</div>
@@ -2029,9 +2544,14 @@ export class Screens {
             <div class="summary-stat"><span>最高连击</span><b>x${view.maxCombo}</b><small>COMBO</small></div>
             <div class="summary-stat"><span>剩余耐心</span><b class="hearts-inline">${heartsHtml(view.hearts)}</b><small>口碑</small></div>
           </div>
+          <div class="summary-challenge ${view.challenge.done ? 'is-done' : 'is-missed'}">
+            ${icon(view.challenge.done ? 'trophy' : 'leaf')}
+            <div><span>每日小目标 · ${view.challenge.challenge.short}</span><b>${view.challenge.challenge.label}</b></div>
+            <em>${view.challenge.done ? `完成 · + ¥${view.challengeReward}` : view.challenge.failed ? '有客人等太久了' : `${view.challenge.value} / ${view.challenge.challenge.target}`}</em>
+          </div>
           <div class="summary-reward ${view.bonus > 0 ? 'has-bonus' : ''}">
             ${icon('coin')}
-            <div><span>${view.bonus > 0 ? '目标达成奖励' : '今日小结'}</span><b>${view.bonus > 0 ? `+ ¥${view.bonus}` : '明天继续加油'}</b></div>
+            <div><span>${view.bonus > 0 ? '目标达成奖励' : '今日小结'}</span><b>${view.bonus > 0 ? `+ ¥${view.bonus}` : view.challenge.done ? '小目标完成了，也很棒' : '明天继续加油'}</b></div>
             <em>小金库 ¥${view.coins}</em>
           </div>
           <div class="summary-doodle" aria-hidden="true">${cupDoodle('今日的甜度，刚刚好')}</div>
@@ -2123,63 +2643,90 @@ export class Screens {
               </div>
               <div class="shop-tip">${icon('heart')} 已经服务过 ${view.servedTotal} 位客人，辛苦了。</div>
             </aside>
-            <section class="upgrade-section">
-              <div class="upgrade-head">
-                <div><span>小店成长</span><h3>挑一件让明天更顺手的家具</h3></div>
-                <p>升级会立刻生效，也会留在每一段营业里。</p>
-              </div>
-              <div class="upgrade-grid">
-                ${UPGRADES.map((upgrade) => {
-                  const level = view.upgrades[upgrade.id];
-                  const maxed = level >= upgrade.maxLevel;
-                  const cost = maxed ? 0 : upgrade.costs[level];
-                  const affordable = view.coins >= cost;
-                  return `<article class="upgrade-card ${maxed ? 'is-maxed' : ''}" style="--accent:${upgrade.accent}">
-                    <div class="upgrade-card-top">
-                      <span class="upgrade-icon">${icon(UPGRADE_ICONS[upgrade.id])}</span>
-                      <div class="level-dots">
-                        ${Array.from({ length: upgrade.maxLevel }, (_, i) => `<i class="${i < level ? 'is-on' : ''}"></i>`).join('')}
+            <section class="upgrade-section shop-main">
+              <div class="shop-block shop-grow">
+                <header class="shop-block-head">
+                  <div><span>${icon('sparkle')} 小店成长 · GROW</span><h3>挑一件让明天更顺手的家具</h3></div>
+                  <p>升级立刻生效，每一天都在。</p>
+                </header>
+                <div class="grow-grid">
+                  ${UPGRADES.map((upgrade) => {
+                    const level = view.upgrades[upgrade.id];
+                    const maxed = level >= upgrade.maxLevel;
+                    const cost = maxed ? 0 : upgrade.costs[level];
+                    const affordable = view.coins >= cost;
+                    return `<article class="grow-card ${maxed ? 'is-maxed' : ''}" style="--accent:${upgrade.accent}" title="“${upgrade.flavor}”">
+                      <div class="grow-top">
+                        <span class="grow-icon">${icon(UPGRADE_ICONS[upgrade.id])}</span>
+                        <div class="grow-title"><small>${upgrade.latin}</small><h4>${upgrade.name}</h4></div>
+                        <div class="level-dots" aria-label="Lv.${level}/${upgrade.maxLevel}">
+                          ${Array.from({ length: upgrade.maxLevel }, (_, i) => `<i class="${i < level ? 'is-on' : ''}"></i>`).join('')}
+                        </div>
                       </div>
-                    </div>
-                    <span class="upgrade-latin">${upgrade.latin}</span>
-                    <h4>${upgrade.name}</h4>
-                    <p>${upgrade.description}</p>
-                    <p class="upgrade-flavor">“${upgrade.flavor}”</p>
-                    <div class="upgrade-effect">
-                      <small>当前</small><b>${UPGRADE_EFFECTS[upgrade.id](level)}</b>
-                      ${maxed ? '' : `<em>→ ${UPGRADE_EFFECTS[upgrade.id](level + 1)}</em>`}
-                    </div>
-                    <button type="button" class="btn btn-buy" data-action="buyUpgrade" data-id="${upgrade.id}" ${maxed || !affordable ? 'disabled' : ''}>
-                      ${maxed ? `${icon('check')} 已满级` : `<span>${icon('coin')} ${cost}</span><small>${affordable ? '升级' : '金币不够'}</small>`}
-                    </button>
-                  </article>`;
-                }).join('')}
+                      <p class="grow-desc">${upgrade.description}</p>
+                      <p class="grow-effect"><span>${UPGRADE_EFFECTS[upgrade.id](level)}</span>${maxed ? '' : `<em>→ ${UPGRADE_EFFECTS[upgrade.id](level + 1).split(' ').pop()}</em>`}</p>
+                      <button type="button" class="btn btn-buy grow-buy" data-action="buyUpgrade" data-id="${upgrade.id}" ${maxed || !affordable ? 'disabled' : ''}>
+                        ${maxed ? `${icon('check')} 已满级` : `<span>${icon('coin')} ${cost}</span><small>${affordable ? '升级' : '金币不够'}</small>`}
+                      </button>
+                    </article>`;
+                  }).join('')}
+                </div>
               </div>
-              ${
-                view.limited.length
-                  ? `<div class="limited-section">
-                      <div class="upgrade-head">
-                        <div><span>LOOSE PAGES · 限定配方</span><h3>从城市与远方，带回一点点新的甜</h3></div>
-                        <p>已经收进配方手账，也会加入明天的刷单池。</p>
-                      </div>
-                      <div class="limited-grid">
+              <div class="shop-block shop-decor">
+                <header class="shop-block-head">
+                  <div><span>${icon('brush')} 小店装修 · DECOR</span><h3>给小店换一身新衣裳</h3></div>
+                  <p>买下后随时免费换，店里马上就能看到。</p>
+                </header>
+                <div class="decor-grid">
+                  ${DECOR_SLOTS.map((slot) => `<div class="decor-slot">
+                    <div class="decor-slot-head"><b>${slot.label}</b><small>${slot.latin}</small></div>
+                    <div class="decor-tiles">
+                      ${decorForSlot(slot.id).map((item) => {
+                        const equipped = view.decor.equipped[slot.id] === item.id;
+                        const owned = item.cost === 0 || view.decor.owned.includes(item.id);
+                        const affordable = view.coins >= item.cost;
+                        const swatch = `<span class="decor-swatch is-${slot.id}" style="${item.colors.map((color, i) => `--c${i}:${color}`).join(';')}">${
+                          slot.id === 'bunting' ? item.colors.map((color) => `<i style="--c:${color}"></i>`).join('') : '<i></i>'
+                        }</span>`;
+                        if (equipped) {
+                          return `<button type="button" class="decor-tile is-equipped" data-id="${item.id}" aria-pressed="true" title="${item.description}" aria-label="${slot.label}：${item.name}，使用中">
+                            ${swatch}<span class="decor-name">${item.name}</span><span class="decor-state">${icon('check')}使用中</span>
+                          </button>`;
+                        }
+                        if (owned) {
+                          return `<button type="button" class="decor-tile is-owned" data-action="equipDecor" data-id="${item.id}" aria-pressed="false" title="${item.description}" aria-label="${slot.label}：换上${item.name}">
+                            ${swatch}<span class="decor-name">${item.name}</span><span class="decor-state">换上</span>
+                          </button>`;
+                        }
+                        return `<button type="button" class="decor-tile is-shop" data-action="buyDecor" data-id="${item.id}" title="${item.description}" aria-label="${slot.label}：${item.name}，¥${item.cost}${affordable ? '' : '，金币不够'}" ${affordable ? '' : 'disabled'}>
+                          ${swatch}<span class="decor-name">${item.name}</span><span class="decor-state">${icon('coin')}${item.cost}</span>
+                        </button>`;
+                      }).join('')}
+                    </div>
+                  </div>`).join('')}
+                </div>
+              </div>
+              <div class="shop-block shop-limited">
+                <header class="shop-block-head">
+                  <div><span>${icon('postcard')} 限定配方 · LOOSE PAGES</span><h3>从城市与远方，带回来的甜</h3></div>
+                  <p>收进配方手账，也会加入明天的点单。</p>
+                </header>
+                ${
+                  view.limited.length
+                    ? `<div class="limited-strip">
                         ${view.limited
                           .map(
-                            (drink) => `<article class="limited-card" style="--drink:${drink.color};--drink-top:${drink.colorTop};--accent:${drink.accent}">
+                            (drink) => `<article class="limited-chip" style="--drink:${drink.color};--accent:${drink.accent}" title="${baseRecipeLineFor(categoryOf(drink), drink.recipe)}">
                               ${miniCup(drink, 'limited-cup')}
-                              <div class="limited-copy">
-                                <span class="limited-badge ${drink.source === 'travel' ? 'is-travel' : 'is-city'}">${drink.source === 'travel' ? `${icon('plane')} 旅行限定` : `${icon('car')} 城市限定`}</span>
-                                <b>${drink.name}</b>
-                                <small>${baseRecipeLineFor(categoryOf(drink), drink.recipe)}</small>
-                              </div>
+                              <div><b>${drink.name}</b><small class="${drink.source === 'travel' ? 'is-travel' : 'is-city'}">${drink.source === 'travel' ? `${icon('plane')} 旅行限定` : `${icon('car')} 城市限定`}</small></div>
                               <em>¥${drink.price}</em>
                             </article>`,
                           )
                           .join('')}
-                      </div>
-                    </div>`
-                  : ''
-              }
+                      </div>`
+                    : `<p class="limited-empty">${icon('car')} 还没有限定配方。傍晚去街上走走，或者坐小桃号去旅行，都会带回新的甜。</p>`
+                }
+              </div>
             </section>
           </div>
         </article>
@@ -2195,10 +2742,14 @@ export class Screens {
     if (nextSection) nextSection.scrollTop = scroll.section;
 
     if (focusAction) {
+      // A bought decor tile turns into 「使用中」 without an action, so fall back to its id.
       const selector = focusId
         ? `[data-action="${focusAction}"][data-id="${focusId}"]`
         : `[data-action="${focusAction}"]`;
-      this.screenRoot.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+      const target =
+        this.screenRoot.querySelector<HTMLElement>(selector) ??
+        (focusId ? this.screenRoot.querySelector<HTMLElement>(`.shop-main [data-id="${focusId}"]`) : null);
+      target?.focus({ preventScroll: true });
     }
   }
 
@@ -2217,18 +2768,12 @@ export class Screens {
       const planeHere = spot.id === 'airclub' && view.plane;
       return `<button type="button" class="city-building is-${spot.id} ${isActive ? 'is-active' : ''} ${isDone ? 'is-done' : ''} ${isClosed ? 'is-closed' : ''}" style="--x:${pos.x}%;--y:${pos.y}%;--spot:${spot.color}" data-action="visitCitySpot" data-id="${spot.id}" aria-label="${spot.name}">
         <span class="city-building-sign">${icon(spot.icon)}<b>${CITY_SHORT[spot.id]}</b></span>
-        <span class="city-building-roof"></span>
-        <span class="city-building-body">
-          <i class="city-window w1"></i><i class="city-window w2"></i>
-          <i class="city-window w3"></i>
-          <i class="city-door"></i>
-        </span>
-        <span class="city-building-awning"></span>
+        <svg class="city-art" viewBox="0 0 120 96" preserveAspectRatio="xMidYMax meet" aria-hidden="true" focusable="false">${CITY_ART[spot.id]}</svg>
         ${isDone ? '<span class="city-building-tag">今晚来过</span>' : ''}
         ${isActive ? '<span class="city-building-tag is-here">就在这里</span>' : ''}
         ${planeHere ? '<span class="city-building-tag is-plane">飞机已解锁</span>' : ''}
       </button>`;
-    }).join('');
+    }).join('') + CITY_PAPER_DEFS;
 
     const marketPanel = () => {
       const carried = view.supplies.length;
@@ -2265,9 +2810,18 @@ export class Screens {
     };
 
     const storyPanel = (current: NonNullable<CityView['story']>) => {
+      const regular = current.regular;
+      const regularCard = regular
+        ? `<div class="story-regular" style="--accent:${regular.colors.accent};--coat:${regular.colors.coat}">
+            <span class="story-regular-photo">${portraitImg(regular, current.replyIndex === null ? 'smile' : 'happy', 'story-regular-img')}</span>
+            <span class="story-regular-name"><b>${regular.name}</b><small>${regular.title}</small></span>
+          </div>`
+        : '';
+      const regularClass = regular ? ' has-regular' : '';
       if (current.replyIndex === null) {
         return `
-          <div class="city-story" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+          <div class="city-story${regularClass}" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+            ${regularCard}
             <span class="city-story-kicker">${current.kicker}</span>
             <h3>${current.title}</h3>
             <p class="city-story-text">${current.text}</p>
@@ -2285,7 +2839,8 @@ export class Screens {
         `;
       }
       return `
-        <div class="city-story is-replied" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+        <div class="city-story is-replied${regularClass}" style="--spot:${activeSpot?.color ?? '#ffb0a2'}">
+          ${regularCard}
           <span class="city-story-kicker">${current.kicker}</span>
           <h3>${current.title}</h3>
           <div class="story-reply">
@@ -2676,32 +3231,28 @@ export class Screens {
     } else if (phase === 'mini' && view.mini) {
       const mini = view.mini;
       const miniMarkup =
-        mini.mode === 'timing' && chapter.timing
-          ? `<div class="travel-timing ${mini.done ? 'is-done' : ''}">
+        mini.mode === 'timing' && chapter.timing && mini.engine
+          ? `<div class="travel-timing finish-travel engine-${mini.engine} ${mini.done ? 'is-done' : ''}">
               <div class="timing-top">
                 <span>${icon('clock')} ${chapter.timing.hint}</span>
-                <b>${mini.taps} / ${mini.tapsNeeded} ${chapter.timing.unit}</b>
+                <b data-travel-count>${mini.taps} / ${mini.tapsNeeded} ${chapter.timing.unit}</b>
               </div>
-              <div class="timing-track">
-                <span class="timing-zone" style="left:${50 - mini.zone * 100}%;width:${mini.zone * 200}%"></span>
-                <span class="timing-center"></span>
-                <span class="timing-pointer" data-travel-pointer></span>
-              </div>
-              <div class="timing-scale"><span>${chapter.timing.scale[0]}</span><span>${chapter.timing.scale[1]}</span><span>${chapter.timing.scale[2]}</span></div>
-              <div class="timing-pips">
-                ${Array.from(
-                  { length: mini.tapsNeeded },
-                  (_, i) => `<i class="${mini.scores[i] === undefined ? '' : mini.scores[i] >= 0.82 ? 'is-perfect' : mini.scores[i] >= 0.52 ? 'is-good' : 'is-miss'}">${icon('sparkle')}</i>`,
-                ).join('')}
-              </div>
+              ${finishStageMarkup(mini.engine, mini.tapsNeeded, chapter.timing.scale, chapter.postcard.stampIcon)}
+              <div class="timing-pips" data-travel-pips>${travelPips(mini, chapter.timing.overLabel)}</div>
               ${
                 mini.done
                   ? `<div class="timing-done">
                       <div><span>${icon('sparkle')} ${chapter.timing.doneLine}</span><div class="mini-stars">${travelStars(mini.stars)}</div></div>
                       <button type="button" class="btn btn-primary btn-big" data-action="travelNext">看看明信片 ${icon('arrow')}</button>
                     </div>`
-                  : `<button type="button" class="btn btn-primary btn-big timing-tap" data-action="travelTimingTap">${icon('sparkle')} ${chapter.timing.tapLabel}</button>
-                     <p class="timing-tip">${icon('leaf')} 指针进入薄荷色区域时按下，没有失败，只有更漂亮的一接。</p>`
+                  : `<button type="button" class="btn btn-primary btn-big timing-tap" data-action="travelTimingTap" data-finish-press>${icon('sparkle')} ${chapter.timing.tapLabel}<small>${mini.engine === 'hold' ? 'SPACE / 按住' : 'SPACE / 点按'}</small></button>
+                     <p class="timing-tip">${icon('leaf')} ${
+                       mini.engine === 'rhythm'
+                         ? '拍子滑进圆圈时按下，没有失败，只有更漂亮的一接。'
+                         : mini.engine === 'hold'
+                           ? '按住不放，落进薄荷色那一段再松手；顶到头会自己停下。'
+                           : '指针进入薄荷色区域时按下，没有失败，只有更漂亮的一接。'
+                     }</p>`
               }
             </div>`
           : chapter.quiz
@@ -2823,13 +3374,18 @@ export class Screens {
       </div>
     `;
 
-    this.travelPointer = this.screenRoot.querySelector<HTMLElement>('[data-travel-pointer]');
+    this.finishEls = null;
     this.setSound(this.soundEnabled);
   }
 
-  updateTravelPointer(position: number) {
-    if (!this.travelPointer) return;
-    this.travelPointer.style.left = `${Math.max(0, Math.min(1, position)) * 100}%`;
+  /** Light refresh of the travel timing count + pips after a score (the stage keeps animating). */
+  updateTravelMini(view: TravelSessionView) {
+    const mini = view.mini;
+    if (!mini || mini.mode !== 'timing') return;
+    const count = this.screenRoot.querySelector<HTMLElement>('[data-travel-count]');
+    if (count) count.textContent = `${mini.taps} / ${mini.tapsNeeded} ${mini.unit}`;
+    const pips = this.screenRoot.querySelector<HTMLElement>('[data-travel-pips]');
+    if (pips) pips.innerHTML = travelPips(mini, view.chapter.timing?.overLabel);
   }
 
   showPause(view: PauseView) {
@@ -2846,6 +3402,11 @@ export class Screens {
             <div><span>目标</span><b>¥${view.goal}</b></div>
             <div><span>耐心</span><b class="hearts-inline">${heartsHtml(view.hearts)}</b></div>
           </div>
+          <div class="pause-challenge ${view.challenge.done ? 'is-done' : view.challenge.failed ? 'is-failed' : ''}">
+            ${icon('trophy')}
+            <span><small>每日小目标</small><b>${view.challenge.challenge.label}</b></span>
+            <em>${view.challenge.done ? '已完成' : view.challenge.failed ? '今天没赶上' : `${view.challenge.value} / ${view.challenge.challenge.target}`}</em>
+          </div>
           ${
             view.supplies.length || view.travelBonus > 0
               ? `<div class="pause-supplies">
@@ -2861,6 +3422,7 @@ export class Screens {
           <div class="pause-grid">
             <button type="button" class="pause-option" data-action="openHelp">${icon('book')}<span><b>玩法说明</b><small>配方、连击和小费</small></span></button>
             <button type="button" class="pause-option" data-action="toggleSound">${icon(view.sound ? 'sound' : 'soundOff')}<span><b data-sound-label>${view.sound ? '音效：开' : '音效：关'}</b><small>只在动作时响起</small></span></button>
+            <button type="button" class="pause-option" data-action="toggleMusic">${icon(view.music ? 'music' : 'musicOff')}<span><b data-music-label>${view.music ? '音乐：开' : '音乐：关'}</b><small>音乐盒轻轻循环</small></span></button>
             <button type="button" class="pause-option" data-action="goTitle">${icon('home')}<span><b>回到标题</b><small>今天重新开始</small></span></button>
             <button type="button" class="pause-option is-danger" data-action="resetSave">${icon('star')}<span><b>重新开张</b><small>清空所有进度</small></span></button>
           </div>
@@ -2870,6 +3432,7 @@ export class Screens {
     `;
     this.setSound(view.sound);
     this.soundEnabled = view.sound;
+    this.setMusic(view.music);
   }
 
   showHelp(view: HelpView) {
@@ -2904,22 +3467,24 @@ export class Screens {
                   <li><b>5–6 / 7</b><span>还不错 · 会有点小遗憾</span></li>
                   <li><b>4 项以下</b><span>客人会失望 · 失去一颗耐心</span></li>
                 </ul>
-                <p class="help-small">糖度、冰量、杯型和小料看客人的点单便签；茶底、奶和风味翻配方页或「配方速查」。</p>
+                <p class="help-small">调制时先「选杯」，7 项会按配方自动填好；再照便签改冰量、糖度、杯型和小料。</p>
               </section>
               <section class="help-section">
                 <h3>${icon('sparkle')} 多赚一点的小秘密</h3>
                 <ul class="help-bullets">
                   <li>${icon('sparkle')}<span><b>完美连击</b>：连续做出 5 项以上吻合的饮品，小费会越来越高。</span></li>
-                  <li>${icon('shaker')}<span><b>完美手摇</b>：指针停在薄荷区正中心，手摇奖励更丰厚。</span></li>
+                  <li>${icon('shaker')}<span><b>完美收尾</b>：茶饮压准节拍、奶昔在目标带松手、冰淇淋对准球堆顶部，品质越高奖励越丰厚。</span></li>
                   <li>${icon('crown')}<span><b>贵宾客人</b>：戴皇冠的客人要求更高，但会给出更高的小费。</span></li>
                   <li>${icon('bolt')}<span><b>加急订单</b>：会有额外奖励，记得先看耐心条。</span></li>
-                  <li>${icon('cart')}<span><b>小店升级</b>：每天打烊后，用金币让明天更轻松。</span></li>
+                  <li>${icon('heartWish')}<span><b>常客心愿</b>：熟了的常客会只说想要的味道，或者一句「老样子」——翻翻小本子的常客页。</span></li>
+                  <li>${icon('trophy')}<span><b>每日小目标</b>：每个主题日都有一个小目标，完成能多领金币，也是三星的条件。</span></li>
+                  <li>${icon('cart')}<span><b>小店整备</b>：打烊后升级家具、换装修，让明天更顺手也更好看。</span></li>
                 </ul>
               </section>
             </div>
             <div class="help-shortcuts">
               <span><kbd>Esc</kbd> 关闭当前界面 / 暂停</span>
-              <span><kbd>空格</kbd> 手摇时点击</span>
+              <span><kbd>空格</kbd> 收尾时点按（搅拌要按住）</span>
               <span><kbd>N</kbd> 打开小本子</span>
             </div>
           </div>
@@ -3030,12 +3595,31 @@ export class Screens {
 
   private onClickRoot = (event: Event) => this.handleAction(event as MouseEvent);
 
+  /** Finish press buttons act on pointerdown (press) and pointerup / pointercancel (release) so holding works. */
   private onPointerDownRoot = (event: PointerEvent) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
-    if (target?.dataset.action !== 'shakeTap') return;
+    const action = target?.dataset.action;
+    if (action !== 'shakeTap' && action !== 'travelTimingTap') return;
+    if (!event.isPrimary || event.button !== 0 || target?.matches(':disabled')) return;
     event.preventDefault();
-    this.actions.tapShake();
+    // A press whose pointerup never arrived (focus loss, removed node) is released first.
+    this.releaseFinishPress();
+    this.finishPress = { pointerId: event.pointerId, action };
+    if (action === 'shakeTap') this.actions.tapShake();
+    else this.actions.travelTimingTap();
   };
+
+  private onPointerUpWindow = (event: PointerEvent) => {
+    if (this.finishPress?.pointerId === event.pointerId) this.releaseFinishPress();
+  };
+
+  private releaseFinishPress() {
+    const press = this.finishPress;
+    if (!press) return;
+    this.finishPress = null;
+    if (press.action === 'shakeTap') this.actions.releaseShake();
+    else this.actions.travelTimingRelease();
+  }
 
   private onFocusKeyDown = (event: KeyboardEvent) => {
     if (event.key !== 'Tab') return;
@@ -3091,6 +3675,8 @@ export class Screens {
     this.hudRoot.addEventListener('click', this.onClickRoot);
     this.worldRoot.addEventListener('click', this.onClickRoot);
     this.screenRoot.addEventListener('pointerdown', this.onPointerDownRoot, { passive: false });
+    window.addEventListener('pointerup', this.onPointerUpWindow);
+    window.addEventListener('pointercancel', this.onPointerUpWindow);
   }
 
   private handleAction(event: MouseEvent) {
@@ -3121,6 +3707,11 @@ export class Screens {
       case 'startCraft': {
         const id = target.dataset.id;
         if (id) this.actions.startCraft(id);
+        break;
+      }
+      case 'pickDrink': {
+        const id = target.dataset.id;
+        if (id) this.actions.pickDrink(id);
         break;
       }
       case 'select': {
@@ -3180,12 +3771,25 @@ export class Screens {
       case 'toggleSound':
         this.actions.toggleSound();
         break;
+      case 'toggleMusic':
+        this.actions.toggleMusic();
+        break;
       case 'nextFromSummary':
         this.actions.nextFromSummary();
         break;
       case 'buyUpgrade': {
         const id = target.dataset.id as UpgradeId | undefined;
         if (id) this.actions.buyUpgrade(id);
+        break;
+      }
+      case 'buyDecor': {
+        const id = target.dataset.id;
+        if (id) this.actions.buyDecor(id);
+        break;
+      }
+      case 'equipDecor': {
+        const id = target.dataset.id;
+        if (id) this.actions.equipDecor(id);
         break;
       }
       case 'nextDay':
@@ -3244,7 +3848,7 @@ export class Screens {
         break;
       }
       case 'travelTimingTap':
-        this.actions.travelTimingTap();
+        // Pressed on pointerdown; Space covers the keyboard.
         break;
       case 'travelQuizAnswer': {
         const index = Number(target.dataset.index);

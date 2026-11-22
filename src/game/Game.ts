@@ -1,26 +1,24 @@
 import { CafeScene } from '../scene/CafeScene';
 import { CupPreview } from '../scene/CupPreview';
-import { Screens, type ChatView, type CityView, type CraftView, type DeliveryRailView, type HelpView, type HudState, type NotebookView, type OrderSlipView, type ServeView, type ShakeView, type ShopView, type SummaryView, type TravelSessionView, type TravelView, type UiActions, type WorldOrderView } from '../ui/Screens';
+import { Screens, type ChatView, type CityView, type CraftView, type DeliveryRailView, type HelpView, type HudState, type NotebookTab, type NotebookView, type OrderSlipView, type PauseView, type ServeView, type ShakeView, type ShopView, type SummaryView, type TravelSessionView, type TravelView, type UiActions, type WorldOrderView } from '../ui/Screens';
 import { AudioEngine } from './audio';
+import { FINISH_ENGINE, cloneFinish, createFinish, finishFrame, pressFinish, releaseFinish, tickFinish, type FinishEvent, type FinishState } from './finish';
 import {
   CATEGORY_META,
   CUSTOMERS_MAP,
   DELIVERY_ADDRESSES,
-  DELIVERY_NOTES,
   DRINKS,
   DRINKS_MAP,
   PACKAGING_META,
-  PACKAGING_BY_CATEGORY,
-  REGULAR_WISHES,
   THEMES,
   UPGRADES,
   UPGRADES_MAP,
   compareRecipe,
   customerForDay,
-  drinkForDay,
   getDayConfig,
-  randomRequest,
 } from './data';
+import { challengeProgress } from './challenge';
+import { packingShelf, planDelivery, planDineIn, resolveTarget, revealsDrinkName } from './orders';
 import {
   CITY_EVENING_SLOTS,
   CITY_SUPPLY_LIMIT,
@@ -41,7 +39,9 @@ import {
   type TravelChapterDef,
 } from './expansion';
 import { freshSave, loadSave, persistSave, wipeSave } from './save';
+import { DECOR_MAP, DECOR_SLOTS } from './decor';
 import type {
+  ChallengeProgress,
   CitySpotId,
   CraftSelections,
   CraftStep,
@@ -69,33 +69,28 @@ type Overlay = 'order' | 'craft' | 'notebook' | 'pause' | 'help' | 'result' | 'c
 type HelpOrigin = 'title' | 'pause' | null;
 type EndReason = 'time' | 'hearts';
 
-interface ShakeState {
-  t: number;
-  scores: number[];
-  done: boolean;
-  quality: number;
-  perfect: boolean;
-}
+/** Ignore 「完成」/「送出」 this long after the step before it finished, so trailing taps don't skip ahead. */
+const STEP_GUARD_MS = 450;
 
 interface CraftSession {
   orderId: string;
+  /** Drink picked in the 「选杯」 step; null until the player picks one. */
+  drinkId: string | null;
   step: CraftStep;
   selections: CraftSelections;
-  shake: ShakeState | null;
+  shake: FinishState | null;
   packed: string[];
+  /** Items packed that this delivery did not need. */
+  packWrong: number;
 }
 
 interface CraftDraft {
+  drinkId: string | null;
   step: CraftStep;
   selections: CraftSelections;
-  shake: ShakeState | null;
+  shake: FinishState | null;
   packed: string[];
-}
-
-interface TravelTimingState {
-  t: number;
-  scores: number[];
-  done: boolean;
+  packWrong: number;
 }
 
 interface TravelSession {
@@ -103,7 +98,7 @@ interface TravelSession {
   phase: 'scene' | 'choice' | 'mini' | 'result';
   beat: number;
   replyIndex: number | null;
-  timing: TravelTimingState | null;
+  timing: FinishState | null;
   quizIndex: number;
   quizCorrect: number;
   quizAnswered: number | null;
@@ -157,6 +152,7 @@ export class Game {
   private craft: CraftSession | null = null;
   private craftDrafts = new Map<string, CraftDraft>();
   private upgradeLockUntil = 0;
+  private stepGuardUntil = 0;
 
   private spawnTimer = 0;
   private deliveryTimer = 0;
@@ -165,7 +161,7 @@ export class Game {
   private dayActive = false;
   private storeOpen = false;
   private signBeforePause: boolean | null = null;
-  private chat: { orderId: string; replyIndex: number | null } | null = null;
+  private chat: { orderId: string; chatId: string; replyIndex: number | null; liked: boolean } | null = null;
   private pendingEnd: EndReason | null = null;
 
   private citySpot: CitySpotId | null = null;
@@ -188,16 +184,23 @@ export class Game {
     this.config = getDayConfig(this.save.day, this.extraDrinks());
     this.tutorialStep = this.save.tutorialSeen ? 4 : 0;
     this.audio.setEnabled(this.save.sound);
+    this.audio.setMusicEnabled(this.save.music);
     this.scene = new CafeScene(canvas, this.config.theme, {
       onCustomerClick: (id) => this.openOrder(id),
       onCustomerArrive: (id) => this.onCustomerArrive(id),
       onCustomerGone: (id) => this.onCustomerGone(id),
+      onMenuClick: () => {
+        if (this.screen === 'playing' && !this.overlay) this.openNotebook('recipes');
+      },
     });
     this.scene.setDay(this.config.day, this.config.theme, this.config.unlockedDrinkIds);
     this.scene.setUpgrades(this.save.upgrades);
+    this.scene.setDecor(this.save.decor.equipped);
     this.ui = new Screens(this.buildActions());
     this.ui.setSound(this.save.sound);
     window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('blur', this.onBlur);
     window.addEventListener('resize', this.onResize);
     this.showTitle();
     this.resumePendingShop();
@@ -215,6 +218,8 @@ export class Game {
     cancelAnimationFrame(this.raf);
     window.clearTimeout(this.resizeTimer);
     window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('resize', this.onResize);
     this.preview?.dispose();
     this.preview = null;
@@ -232,11 +237,13 @@ export class Game {
       openOrder: (id) => this.openOrder(id),
       acceptOrder: (id) => this.acceptOrder(id),
       startCraft: (id) => this.startCraft(id),
+      pickDrink: (id) => this.pickDrink(id),
       selectIngredient: (key, value) => this.selectIngredient(key, value),
       clearSelections: () => this.clearSelections(),
       goShake: () => this.goShake(),
       tapShake: () => this.tapShake(),
       finishShake: () => this.finishShake(),
+      releaseShake: () => this.releaseShake(),
       serve: () => this.serve(),
       closeOverlay: () => this.closeOverlay(),
       openNotebook: () => this.openNotebook(),
@@ -247,8 +254,11 @@ export class Game {
       openHelp: () => this.openHelp(),
       closeHelp: () => this.closeHelp(),
       toggleSound: () => this.toggleSound(),
+      toggleMusic: () => this.toggleMusic(),
       nextFromSummary: () => this.openShop(),
       buyUpgrade: (id) => this.buyUpgrade(id),
+      buyDecor: (id) => this.buyDecor(id),
+      equipDecor: (id) => this.equipDecor(id),
       nextDay: () => this.nextDay(),
       skipTutorial: () => this.skipTutorial(),
       toggleSign: () => this.toggleSign(),
@@ -269,6 +279,7 @@ export class Game {
       travelChoose: (index) => this.travelChoose(index),
       travelTimingTap: () => this.travelTimingTap(),
       travelQuizAnswer: (index) => this.travelQuizAnswer(index),
+      travelTimingRelease: () => this.travelTimingRelease(),
       travelQuizNext: () => this.travelQuizNext(),
       travelFinish: () => this.travelFinish(),
       travelBackToJournal: () => this.travelBackToJournal(),
@@ -285,10 +296,12 @@ export class Game {
 
     this.scene.tick(dt);
     if (this.screen === 'playing' && this.player) {
-      // Spawning pauses behind overlays, but the shift clock and guest
-      // patience keep ticking so opening the notebook isn't a free pause.
-      if (this.dayActive) this.simulate(dt, this.overlay === null);
-      if (this.overlay === 'craft' && this.craft?.step === 'shake' && this.craft.shake && !this.craft.shake.done) {
+      // Pause and help freeze the whole shift. Every other overlay (slip, chat,
+      // crafting, notebook, result) keeps the clock, patience and arrivals
+      // running, so a busy player sees a busy shop.
+      const frozen = this.overlay === 'pause' || this.overlay === 'help';
+      if (this.dayActive && !frozen) this.simulate(dt);
+      if (this.overlay === 'craft' && this.craft?.step === 'shake' && this.craft.shake) {
         this.updateShake(dt);
       }
       this.ui.updateHud(this.hudState());
@@ -304,12 +317,13 @@ export class Game {
 
     const worldActive = this.screen === 'playing' && !this.overlay && this.dayActive;
     if (this.player) {
+      const revealName = revealsDrinkName(this.config.day, this.save.tutorialSeen);
       const orders = this.player.orders
         .filter((order) => order.status === 'waiting' || order.status === 'in-craft')
         .map((order) => {
           const customer = CUSTOMERS_MAP[order.customerId];
           const drink = DRINKS_MAP[order.drinkId];
-          return customer && drink ? { order, customer, drink } : null;
+          return customer && drink ? { order, customer, drink, revealName } : null;
         })
         .filter((view): view is WorldOrderView => view !== null);
       this.ui.updateWorld(orders, this.scene.getBubbleAnchors(), worldActive);
@@ -327,7 +341,7 @@ export class Game {
     this.raf = requestAnimationFrame(this.loop);
   };
 
-  private simulate(dt: number, canSpawn: boolean) {
+  private simulate(dt: number) {
     const p = this.player;
     if (!p || !this.dayActive) return;
 
@@ -339,7 +353,7 @@ export class Game {
       return;
     }
 
-    if (canSpawn && this.storeOpen) {
+    if (this.storeOpen) {
       this.spawnTimer -= dt;
       if (this.spawnTimer <= 0) {
         const spawned = this.trySpawn();
@@ -387,7 +401,18 @@ export class Game {
       signOpen: this.storeOpen,
       sound: this.save.sound,
       coach: this.coachText(),
+      challenge: p ? challengeProgress(this.config.challenge, p) : null,
     };
+  }
+
+  /** Toast once when a same-day 每日小目标 is reached (「无人久等」 settles at close). */
+  private checkChallenge() {
+    const p = this.player;
+    if (!p || p.challengeDone) return;
+    if (!challengeProgress(this.config.challenge, p).done) return;
+    p.challengeDone = true;
+    this.audio.play('summary');
+    this.ui.toast(`每日小目标达成：${this.config.challenge.label}！打烊时多领 ¥${this.config.challenge.reward}`, 'success', 'trophy');
   }
 
   private coachText(): string | null {
@@ -396,11 +421,11 @@ export class Game {
       case 0:
         return '点一下客人的气泡，看看 Ta 今天想喝什么。';
       case 1:
-        return '对照配方册找到那杯饮品，再记下订单。';
+        return '看看客人想喝哪一杯、有什么特别要求，再记下订单。';
       case 2:
-        return '茶底、奶和风味在「配方速查」里；糖冰和小料看订单便签。';
+        return '先在「选杯」里点这杯，配方会自动填好；再照便签改冰量、糖度、杯型和小料。';
       case 3:
-        return '按品类的收尾方式：茶饮手摇、奶昔搅拌、冰淇淋堆球，让指针停在薄荷区。';
+        return '按品类收尾：茶饮跟着节拍摇，奶昔按住搅拌到目标带松手，冰淇淋对准顶部落球。';
       default:
         return null;
     }
@@ -459,6 +484,7 @@ export class Game {
     this.scene.clearCustomers(false);
     this.scene.setDay(this.config.day, this.config.theme, this.config.unlockedDrinkIds);
     this.scene.setUpgrades(this.save.upgrades);
+    this.scene.setDecor(this.save.decor.equipped);
     this.scene.setCameraMode('title');
     this.scene.setInteractive(false);
     this.scene.setStoreOpen(false);
@@ -511,6 +537,10 @@ export class Game {
       orders: [],
       completedOrders: [],
       supplies: [...this.save.city.supplies],
+      walkouts: 0,
+      delivery3Today: 0,
+      categoriesServed: [],
+      challengeDone: false,
     };
     this.tutorialStep = this.save.tutorialSeen ? 4 : 0;
     this.dayActive = true;
@@ -562,15 +592,18 @@ export class Game {
     this.ui.clearScreen();
 
     const goalMet = p.revenue >= this.config.goal;
+    const challenge = challengeProgress(this.config.challenge, p, true);
     let grade = 0;
-    if (p.revenue >= this.config.goal * 1.35 && p.hearts >= 2) grade = 3;
-    else if (p.revenue >= this.config.goal) grade = 2;
+    if (goalMet && challenge.done) grade = 3;
+    else if (goalMet) grade = 2;
     else if (p.revenue >= this.config.goal * 0.55) grade = 1;
 
     const bonus = goalMet
       ? Math.round(this.config.goal * 0.18 + p.hearts * 12 + p.maxComboToday * 4)
       : 0;
-    this.save.coins += bonus;
+    const challengeReward = challenge.done ? this.config.challenge.reward : 0;
+    this.save.coins += bonus + challengeReward;
+    if (challenge.done) this.save.challengesDone += 1;
     this.save.bestRevenue = Math.max(this.save.bestRevenue, Math.round(p.revenue));
     this.save.bestCombo = Math.max(this.save.bestCombo, p.maxComboToday);
     // Advance the save immediately so refreshing the summary cannot replay this shift.
@@ -592,6 +625,8 @@ export class Game {
       maxCombo: p.maxComboToday,
       hearts: p.hearts,
       bonus,
+      challenge,
+      challengeReward,
       coins: this.save.coins,
       grade,
       goalMet,
@@ -599,7 +634,7 @@ export class Game {
     };
     this.ui.showSummary(view);
     this.ui.setSound(this.save.sound);
-    if (goalMet) {
+    if (goalMet || challenge.done) {
       this.scene.celebrate();
       this.audio.play('summary');
     } else {
@@ -639,6 +674,7 @@ export class Game {
       day: this.save.pendingShopDay ?? this.config.day,
       coins: this.save.coins,
       upgrades: { ...this.save.upgrades },
+      decor: { owned: [...this.save.decor.owned], equipped: { ...this.save.decor.equipped } },
       nextTheme: nextConfig.theme,
       nextGoal: nextConfig.goal,
       nextShift: nextConfig.shiftSeconds,
@@ -680,6 +716,44 @@ export class Game {
     this.audio.play('buy');
     this.ui.showShop(this.shopView());
     this.ui.toast(`${def.name}升级到 Lv.${level + 1} 啦！`, 'success', 'sparkle');
+  }
+
+  private buyDecor(id: string) {
+    if (this.screen !== 'shop') return;
+    const now = performance.now();
+    if (now < this.upgradeLockUntil) return;
+    this.upgradeLockUntil = now + 320;
+    const def = DECOR_MAP[id];
+    if (!def || this.save.decor.owned.includes(id)) return;
+    if (this.save.coins < def.cost) {
+      this.audio.play('error');
+      this.ui.toast('金币还不够，再攒几天就能换上啦。', 'warning', 'coin');
+      return;
+    }
+    this.save.coins -= def.cost;
+    this.save.decor.owned.push(id);
+    this.save.decor.equipped[def.slot] = id;
+    persistSave(this.save);
+    this.scene.setDecor(this.save.decor.equipped);
+    this.audio.play('buy');
+    this.ui.showShop(this.shopView());
+    this.ui.toast(`买下了「${def.name}」，店里已经换上啦！`, 'success', 'brush');
+  }
+
+  private equipDecor(id: string) {
+    if (this.screen !== 'shop') return;
+    const now = performance.now();
+    if (now < this.upgradeLockUntil) return;
+    this.upgradeLockUntil = now + 320;
+    const def = DECOR_MAP[id];
+    if (!def || !this.save.decor.owned.includes(id) || this.save.decor.equipped[def.slot] === id) return;
+    this.save.decor.equipped[def.slot] = id;
+    persistSave(this.save);
+    this.scene.setDecor(this.save.decor.equipped);
+    this.audio.play('select');
+    this.ui.showShop(this.shopView());
+    const slot = DECOR_SLOTS.find((entry) => entry.id === def.slot);
+    this.ui.toast(`${slot?.label ?? '装修'}换成了「${def.name}」。`, 'success', 'brush');
   }
 
   private nextDay() {
@@ -820,7 +894,7 @@ export class Game {
   }
 
   private enterCityStory(spot: CitySpotId) {
-    const defs = storiesForSpot(spot);
+    const defs = storiesForSpot(spot, this.save.metCustomers);
     if (!defs.length) return;
     const unseen = defs.filter((story) => !this.save.city.stories.includes(story.id));
     const preferred = unseen.filter((story) =>
@@ -960,6 +1034,7 @@ export class Game {
       story: story
         ? {
             id: story.id,
+            regular: story.regular ? CUSTOMERS_MAP[story.regular] ?? null : null,
             kicker: story.kicker,
             title: story.title,
             text: story.text,
@@ -1129,10 +1204,11 @@ export class Game {
       if (chapter.miniGame === 'timing' && chapter.timing) {
         mini = {
           mode: 'timing',
+          engine: chapter.timing.engine,
           taps: session.timing?.scores.length ?? 0,
           tapsNeeded: chapter.timing.taps,
           scores: session.timing?.scores ?? [],
-          zone: chapter.timing.zone,
+          grades: session.timing?.grades ?? [],
           done: session.timing?.done ?? false,
           stars,
           unit: chapter.timing.unit,
@@ -1145,10 +1221,11 @@ export class Game {
       } else if (chapter.quiz) {
         mini = {
           mode: 'quiz',
+          engine: null,
           taps: 0,
           tapsNeeded: chapter.quiz.length,
           scores: [],
-          zone: 0,
+          grades: [],
           done: session.quizDone,
           stars,
           unit: '杯',
@@ -1179,7 +1256,7 @@ export class Game {
     const view = this.travelSessionView();
     if (!view) return;
     this.ui.showTravelSession(view);
-    if (view.mini?.mode === 'timing') this.ui.updateTravelPointer(this.travelPointerPos());
+    if (view.mini?.mode === 'timing' && this.travelSession?.timing) this.ui.updateFinish(finishFrame(this.travelSession.timing));
   }
 
   private travelStarsFor(session: TravelSession, chapter: TravelChapterDef): number {
@@ -1194,24 +1271,39 @@ export class Game {
     return average >= 0.85 ? 3 : average >= 0.55 ? 2 : 1;
   }
 
-  private travelPointerPos(): number {
-    const session = this.travelSession;
-    const chapter = session ? TRAVEL_CHAPTERS_MAP[session.chapterId] : undefined;
-    const timing = session?.timing;
-    if (!session || !chapter?.timing || !timing) return 0.5;
-    const phase = (timing.t * chapter.timing.speed) % 2;
-    let pos = phase < 1 ? phase : 2 - phase;
-    if (chapter.timing.drift) {
-      pos = Math.max(0, Math.min(1, pos + Math.sin(timing.t * 2.4 + 0.6) * 0.06));
-    }
-    return pos;
+  private updateTravelTiming(dt: number) {
+    const timing = this.travelSession?.timing;
+    if (!timing || timing.done) return;
+    const events = tickFinish(timing, dt);
+    if (events.length) this.onTravelFinishEvents(events);
+    if (this.travelSession?.timing === timing && !timing.done) this.ui.updateFinish(finishFrame(timing));
   }
 
-  private updateTravelTiming(dt: number) {
-    const session = this.travelSession;
-    if (!session?.timing || session.timing.done) return;
-    session.timing.t += dt;
-    this.ui.updateTravelPointer(this.travelPointerPos());
+  /** Sfx + light UI refresh for travel timing events; the postcard step re-renders once it's done. */
+  private onTravelFinishEvents(events: FinishEvent[]) {
+    const timing = this.travelSession?.timing;
+    if (!timing) return;
+    this.playFinishSfx(events, timing.engine);
+    if (timing.done) {
+      this.showTravelSession();
+      return;
+    }
+    if (events.some((event) => event.type === 'score')) {
+      const view = this.travelSessionView();
+      if (view) this.ui.updateTravelMini(view);
+    }
+  }
+
+  /** One sound per finish event: soft beat ticks, a stir when a hold starts, a voice per scored unit. */
+  private playFinishSfx(events: FinishEvent[], engine: FinishState['engine']) {
+    for (const event of events) {
+      if (event.type === 'beat') this.audio.play('beat');
+      else if (event.type === 'hold') this.audio.play('blend');
+      else if (event.type === 'done') this.audio.play('accept');
+      else if (event.grade === 'perfect') this.audio.play('shakePerfect');
+      else if (event.grade === 'over') this.audio.play('error');
+      else this.audio.play(engine === 'hold' ? 'blend' : engine === 'stack' ? 'drop' : 'shake');
+    }
   }
 
   private travelNext() {
@@ -1253,8 +1345,15 @@ export class Game {
     if (session.phase !== 'choice' || session.replyIndex !== null || !chapter) return;
     if (!chapter.choices[index]) return;
     session.replyIndex = index;
-    if (chapter.miniGame === 'timing') {
-      session.timing = { t: 0, scores: [], done: false };
+    if (chapter.miniGame === 'timing' && chapter.timing) {
+      const cfg = chapter.timing;
+      session.timing = createFinish(cfg.engine, {
+        units: cfg.taps,
+        speed: cfg.speed,
+        zone: cfg.zone,
+        drift: cfg.drift,
+        seed: Math.floor(Math.random() * 2 ** 31),
+      });
     } else {
       session.quizIndex = 0;
       session.quizCorrect = 0;
@@ -1267,32 +1366,23 @@ export class Game {
   }
 
   private travelTimingTap() {
-    if (this.screen !== 'travel' || !this.travelSession) return;
-    const session = this.travelSession;
-    const chapter = TRAVEL_CHAPTERS_MAP[session.chapterId];
-    const timing = session.timing;
-    if (session.phase !== 'mini' || !chapter?.timing || !timing || timing.done) return;
-    if (timing.scores.length >= chapter.timing.taps) return;
-    const pos = this.travelPointerPos();
-    const zone = chapter.timing.zone;
-    const dist = Math.abs(pos - 0.5);
-    let score: number;
-    if (dist <= zone * 0.22) {
-      score = 1;
-    } else if (dist <= zone) {
-      score = 1 - ((dist - zone * 0.22) / (zone * 0.78)) * 0.26;
-    } else {
-      score = Math.max(0.12, 0.72 - (dist - zone) * 1.5);
-    }
-    timing.scores.push(score);
-    const perfect = score >= 0.82;
-    this.audio.play(perfect ? 'shakePerfect' : 'shake');
-    if (timing.scores.length >= chapter.timing.taps) {
-      timing.done = true;
-      this.audio.play('accept');
-    }
-    this.showTravelSession();
-    this.ui.updateTravelPointer(pos);
+    const timing = this.activeTravelTiming();
+    if (!timing) return;
+    const events = pressFinish(timing);
+    if (events.length) this.onTravelFinishEvents(events);
+  }
+
+  private travelTimingRelease() {
+    const timing = this.activeTravelTiming();
+    if (!timing) return;
+    const events = releaseFinish(timing);
+    if (events.length) this.onTravelFinishEvents(events);
+  }
+
+  private activeTravelTiming(): FinishState | null {
+    if (this.screen !== 'travel' || this.travelSession?.phase !== 'mini') return null;
+    const timing = this.travelSession.timing;
+    return timing && !timing.done ? timing : null;
   }
 
   private travelQuizAnswer(index: number) {
@@ -1381,7 +1471,7 @@ export class Game {
   private trySpawn(): boolean {
     const p = this.player;
     if (!p || !this.dayActive) return false;
-    if (p.orders.length >= 4) return false;
+    if (p.orders.length >= this.config.maxOrders) return false;
     const seat = this.scene.getSeatForNewCustomer();
     if (seat === null) return false;
 
@@ -1393,8 +1483,15 @@ export class Game {
     }
     const { customer, vip } = picked;
     const rush = !vip && Math.random() < this.config.rushChance;
-    const drink = drinkForDay(this.config.day, this.extraDrinks());
-    const request = randomRequest(drink.recipe, this.config.day, drink.category);
+    const plan = planDineIn({
+      day: this.config.day,
+      customer,
+      unlocked: this.unlockedDrinks(),
+      extraIds: this.extraDrinks(),
+      rapport: this.save.regulars[customer.id] ?? 0,
+      last: this.save.lastOrders[customer.id],
+      allowSpecial: !vip && !rush,
+    });
     const patienceMax = Math.max(
       18,
       this.config.patience *
@@ -1402,12 +1499,13 @@ export class Game {
         (vip ? 0.86 : 1) *
         (rush ? 0.62 : 1),
     );
-    const wish = this.wishFor(customer.id);
     const order: OrderState = {
       id: `order-${Date.now()}-${this.orderSeq++}`,
       customerId: customer.id,
-      drinkId: drink.id,
-      request,
+      drinkId: plan.drinkId,
+      request: plan.request,
+      kind: plan.kind,
+      wishTags: plan.wishTags,
       patienceMax,
       patience: patienceMax,
       accepted: false,
@@ -1416,8 +1514,7 @@ export class Game {
       seat,
       channel: 'dine-in',
       talked: false,
-      tipBonus: wish ? 0.12 : 0,
-      wish: wish ?? undefined,
+      tipBonus: 0,
       createdAt: performance.now(),
       status: 'waiting',
     };
@@ -1436,7 +1533,7 @@ export class Game {
   private trySpawnDelivery(): boolean {
     const p = this.player;
     if (!p || !this.dayActive || this.config.deliveryEvery <= 0) return false;
-    if (p.orders.length >= 4) return false;
+    if (p.orders.length >= this.config.maxOrders) return false;
 
     const met = new Set(this.save.metCustomers);
     const pool = Object.values(CUSTOMERS_MAP).filter((customer) => customer.minDay <= this.config.day);
@@ -1444,22 +1541,22 @@ export class Game {
     const base = known.length > 0 ? known : pool;
     const active = new Set(p.orders.filter((order) => order.channel === 'dine-in').map((order) => order.customerId));
     const candidates = base.filter((customer) => !active.has(customer.id));
-    const customer = (candidates.length > 0 ? candidates : base)[Math.floor(Math.random() * (candidates.length > 0 ? candidates.length : base.length))];
+    const choices = candidates.length > 0 ? candidates : base;
+    const customer = choices[Math.floor(Math.random() * choices.length)];
     if (!customer) return false;
 
-    const drink = drinkForDay(this.config.day, this.extraDrinks());
-    const request = randomRequest(drink.recipe, this.config.day, drink.category);
+    const plan = planDelivery(this.config.day, customer, this.unlockedDrinks(), this.extraDrinks());
+    const drink = DRINKS_MAP[plan.drinkId];
     const fee = 4 + Math.floor(Math.random() * 6);
     const distance = `${280 + Math.floor(Math.random() * 1500)}m`;
     const address = DELIVERY_ADDRESSES[Math.floor(Math.random() * DELIVERY_ADDRESSES.length)];
-    const note = DELIVERY_NOTES[Math.floor(Math.random() * DELIVERY_NOTES.length)];
-    const wish = this.wishFor(customer.id);
     const patienceMax = Math.max(26, this.config.patience * 0.64 * (1 + this.suppliesBuff().patience));
     const order: OrderState = {
       id: `order-${Date.now()}-${this.orderSeq++}`,
       customerId: customer.id,
-      drinkId: drink.id,
-      request,
+      drinkId: plan.drinkId,
+      request: plan.request,
+      kind: 'menu',
       patienceMax,
       patience: patienceMax,
       accepted: false,
@@ -1471,26 +1568,18 @@ export class Game {
         address,
         distance,
         fee,
-        note,
-        packaging: [...PACKAGING_BY_CATEGORY[drink.category]],
+        note: plan.note.text,
+        packaging: plan.packaging,
       },
       talked: false,
-      tipBonus: wish ? 0.12 : 0,
-      wish: wish ?? undefined,
+      tipBonus: 0,
       createdAt: performance.now(),
       status: 'waiting',
     };
     p.orders.push(order);
     this.audio.play('delivery');
-    this.ui.toast(`外卖单来了：${address} · ${CATEGORY_META[drink.category].label}`, 'info', 'delivery');
+    this.ui.toast(`外卖单来了：${address} · ${drink ? CATEGORY_META[drink.category].label : '饮品'}`, 'info', 'delivery');
     return true;
-  }
-
-  private wishFor(customerId: string): string | null {
-    const rapport = this.save.regulars[customerId] ?? 0;
-    if (rapport < 2) return null;
-    if (Math.random() > 0.55) return null;
-    return REGULAR_WISHES[Math.floor(Math.random() * REGULAR_WISHES.length)] ?? null;
   }
 
   private onCustomerArrive(id: string) {
@@ -1519,6 +1608,7 @@ export class Game {
     this.craftDrafts.delete(order.id);
     p.hearts = Math.max(0, p.hearts - 1);
     p.combo = 0;
+    p.walkouts += 1;
     order.status = 'left';
     this.scene.sendCustomerAway(order.id, true);
     this.audio.play('heart');
@@ -1539,6 +1629,7 @@ export class Game {
     this.craftDrafts.delete(order.id);
     p.hearts = Math.max(0, p.hearts - 1);
     p.combo = 0;
+    p.walkouts += 1;
     order.status = 'left';
     this.audio.play('heart');
     this.ui.flash('heart');
@@ -1575,6 +1666,7 @@ export class Game {
       drink,
       recipes: this.unlockedDrinks(),
       tutorial: !this.save.tutorialSeen && this.tutorialStep <= 1,
+      revealName: revealsDrinkName(this.config.day, this.save.tutorialSeen),
     };
     this.ui.showOrderSlip(view);
   }
@@ -1604,36 +1696,52 @@ export class Game {
 
   private maybeStartChat(order: OrderState): boolean {
     const customer = CUSTOMERS_MAP[order.customerId];
-    if (!customer?.chat || order.rush || order.talked) return false;
+    if (!customer || order.rush || order.talked) return false;
     if (!this.save.tutorialSeen) return false;
+    const drink = DRINKS_MAP[order.drinkId];
+    if (!drink) return false;
     const rapport = this.save.regulars[customer.id] ?? 0;
+    const unlocked = customer.chats.filter((entry) => entry.minRapport <= rapport);
+    if (!unlocked.length) return false;
     const chance = Math.min(0.58, 0.32 + rapport * 0.03);
     if (Math.random() > chance) return false;
+    // Newest unlocked tier first; once every tier is heard, any unlocked one.
+    const fresh = unlocked
+      .filter((entry) => !this.save.chatsSeen.includes(entry.id))
+      .sort((a, b) => b.minRapport - a.minRapport)[0];
+    const chat = fresh ?? unlocked[Math.floor(Math.random() * unlocked.length)];
     order.talked = true;
-    this.chat = { orderId: order.id, replyIndex: null };
+    this.chat = { orderId: order.id, chatId: chat.id, replyIndex: null, liked: false };
     this.overlay = 'chat';
     this.scene.setInteractive(false);
     this.ui.setOverlayActive(true);
     this.audio.play('chat');
-    const drink = DRINKS_MAP[order.drinkId];
-    if (!drink) return false;
-    this.ui.showChat({ order, customer, drink, replyIndex: null });
+    this.ui.showChat({ order, customer, drink, chat, replyIndex: null, liked: false });
     return true;
   }
 
   private answerChat(index: number) {
     if (!this.chat || this.overlay !== 'chat' || this.chat.replyIndex !== null) return;
-    const order = this.player?.orders.find((entry) => entry.id === this.chat?.orderId);
+    const state = this.chat;
+    const order = this.player?.orders.find((entry) => entry.id === state.orderId);
     const customer = order ? CUSTOMERS_MAP[order.customerId] : undefined;
     const drink = order ? DRINKS_MAP[order.drinkId] : undefined;
-    const option = customer?.chat?.options[index];
-    if (!order || !customer || !drink || !option) return;
-    this.chat.replyIndex = index;
-    order.tipBonus += 0.08;
-    this.save.regulars[customer.id] = Math.min(99, (this.save.regulars[customer.id] ?? 0) + 1);
+    const chat = customer?.chats.find((entry) => entry.id === state.chatId);
+    const option = chat?.options[index];
+    if (!order || !customer || !drink || !chat || !option) return;
+    const liked = !!option.liked;
+    state.replyIndex = index;
+    state.liked = liked;
+    if (liked) {
+      order.tipBonus += 0.1;
+      this.save.regulars[customer.id] = Math.min(99, (this.save.regulars[customer.id] ?? 0) + 1);
+    } else {
+      order.tipBonus += 0.04;
+    }
+    if (!this.save.chatsSeen.includes(chat.id)) this.save.chatsSeen.push(chat.id);
     persistSave(this.save);
-    this.audio.play('select');
-    this.ui.showChat({ order, customer, drink, replyIndex: index });
+    this.audio.play(liked ? 'accept' : 'select');
+    this.ui.showChat({ order, customer, drink, chat, replyIndex: index, liked });
   }
 
   private finishChat() {
@@ -1667,12 +1775,22 @@ export class Game {
     this.craft = draft
       ? {
           orderId: id,
+          drinkId: draft.drinkId,
           step: draft.step,
           selections: { ...draft.selections },
-          shake: draft.shake ? { ...draft.shake, scores: [...draft.shake.scores] } : null,
+          shake: draft.shake ? cloneFinish(draft.shake) : null,
           packed: [...draft.packed],
+          packWrong: draft.packWrong,
         }
-      : { orderId: id, step: 'assemble', selections: emptySelections(), shake: null, packed: [] };
+      : {
+          orderId: id,
+          drinkId: null,
+          step: 'assemble',
+          selections: emptySelections(),
+          shake: null,
+          packed: [],
+          packWrong: 0,
+        };
     order.status = 'in-craft';
     this.overlay = 'craft';
     this.scene.setInteractive(false);
@@ -1707,11 +1825,19 @@ export class Game {
 
   private refreshPreview() {
     if (!this.craft || !this.preview) return;
-    const order = this.player?.orders.find((entry) => entry.id === this.craft?.orderId);
-    if (!order) return;
-    const drink = DRINKS_MAP[order.drinkId];
+    // Before 「选杯」 show a plain tea cup: the order's own cup shape would give
+    // away which drink a described or wished-for order means.
+    const drink = this.craft.drinkId ? DRINKS_MAP[this.craft.drinkId] : DRINKS[0];
     if (!drink) return;
     this.preview.setCup(partialRecipe(this.craft.selections), drink, this.craft.step);
+  }
+
+  /** The drink being made: the one picked in 「选杯」, else the order's drink. */
+  private craftDrink(): DrinkDef | undefined {
+    if (!this.craft) return undefined;
+    if (this.craft.drinkId) return DRINKS_MAP[this.craft.drinkId];
+    const order = this.player?.orders.find((entry) => entry.id === this.craft?.orderId);
+    return order ? DRINKS_MAP[order.drinkId] : undefined;
   }
 
   private craftView(): CraftView | null {
@@ -1719,24 +1845,30 @@ export class Game {
     const order = this.player?.orders.find((entry) => entry.id === this.craft?.orderId);
     if (!order) return null;
     const customer = CUSTOMERS_MAP[order.customerId];
-    const drink = DRINKS_MAP[order.drinkId];
-    if (!customer || !drink) return null;
-    const shakeView: ShakeView | null = this.craft.shake
+    const orderDrink = DRINKS_MAP[order.drinkId];
+    const drink = this.craftDrink();
+    if (!customer || !orderDrink || !drink) return null;
+    const shake = this.craft.shake;
+    const shakeView: ShakeView | null = shake
       ? {
-          taps: this.craft.shake.scores.length,
-          tapsNeeded: this.tapsNeededFor(drink),
-          scores: this.craft.shake.scores,
-          zone: this.shakeZone(),
-          quality: this.craft.shake.quality,
-          done: this.craft.shake.done,
-          perfect: this.craft.shake.perfect,
-          mode: drink.finish,
+          drink,
+          engine: shake.engine,
+          taps: shake.scores.length,
+          tapsNeeded: shake.units,
+          scores: shake.scores,
+          grades: shake.grades,
+          quality: shake.quality,
+          done: shake.done,
+          perfect: shake.perfect,
         }
       : null;
+    const packed = this.craft.packed;
+    const required = order.delivery?.packaging ?? [];
+    const teaching = this.save.deliveryTotal < 2;
     const packaging =
       order.channel === 'delivery' && order.delivery
         ? {
-            items: order.delivery.packaging.map((id) => {
+            items: packingShelf(required).map((id) => {
               const meta = PACKAGING_META[id];
               return {
                 id,
@@ -1744,16 +1876,27 @@ export class Game {
                 sub: meta?.sub ?? '',
                 icon: meta?.icon ?? 'delivery',
                 color: meta?.color ?? '#a8b6ea',
-                packed: this.craft?.packed.includes(id) ?? false,
+                packed: packed.includes(id),
+                hint: teaching && required.includes(id),
               };
             }),
-            allPacked: order.delivery.packaging.every((id) => this.craft?.packed.includes(id)),
+            needed: required.length,
+            done: required.filter((id) => packed.includes(id)).length,
+            wrong: this.craft.packWrong,
+            allPacked: required.every((id) => packed.includes(id)),
           }
         : null;
+    const last = this.save.lastOrders[customer.id];
+    const lastDrink = last ? DRINKS_MAP[last.drinkId] : undefined;
     return {
       order,
       customer,
       drink,
+      orderDrink,
+      chosen: this.craft.drinkId ? drink : null,
+      revealName: revealsDrinkName(this.config.day, this.save.tutorialSeen),
+      rapport: this.save.regulars[customer.id] ?? 0,
+      last: last && lastDrink ? { drink: lastDrink, recipe: last.recipe } : null,
       selections: this.craft.selections,
       step: this.craft.step,
       shake: shakeView,
@@ -1763,17 +1906,13 @@ export class Game {
     };
   }
 
-  private tapsNeededFor(drink: DrinkDef): number {
-    return drink.finish === 'blend' ? 2 : 3;
-  }
-
   private craftTutorialHint(): string | null {
     if (this.save.tutorialSeen || !this.craft) return null;
     if (this.craft.step === 'assemble' && this.tutorialStep >= 1) {
-      return '小提示：先对照「配方速查」选对茶底、奶和风味，糖冰和小料照着便签来。';
+      return '小提示：先在「选杯」里点客人要的那杯，配方会自动填好；再照便签改冰量、糖度、杯型和小料。';
     }
     if (this.craft.step === 'shake') {
-      return '小提示：茶饮手摇、奶昔搅拌、冰淇淋堆球，指针停在薄荷区正中心品质最好。';
+      return '小提示：茶饮跟节拍点按，奶昔按住再在薄荷色目标带松手，冰淇淋对准球堆顶部落球。空格键也可以。';
     }
     return null;
   }
@@ -1782,12 +1921,37 @@ export class Game {
     return DRINKS.filter((drink) => this.config.unlockedDrinkIds.includes(drink.id));
   }
 
-  private shakeZone(): number {
-    return 0.11 * (1 + this.save.upgrades.training * 0.18) * (1 + this.suppliesBuff().zone);
+  /** Widens every finish window: 收尾特训 +18% per level, plus 珍珠礼袋. */
+  private finishEase(): number {
+    return 1 + this.save.upgrades.training * 0.18 + this.suppliesBuff().zone;
+  }
+
+  /** 「选杯」: picking a drink fills all seven fields with its base recipe. */
+  private pickDrink(id: string) {
+    if (!this.craft || this.craft.step !== 'assemble') return;
+    const drink = DRINKS_MAP[id];
+    if (!drink || !this.config.unlockedDrinkIds.includes(id)) return;
+    this.craft.drinkId = id;
+    this.craft.selections = { ...drink.recipe };
+    this.audio.play('select');
+    const view = this.craftView();
+    if (!view) return;
+    // The finish panel and preview caption are built for one drink; rebuild.
+    this.ui.showCraft(view);
+    if (this.previewCanvas) this.ui.mountPreviewCanvas(this.previewCanvas);
+    window.requestAnimationFrame(() => this.preview?.resize());
+    this.refreshPreview();
   }
 
   private selectIngredient(key: keyof CraftSelections, value: string) {
     if (!this.craft || this.craft.step !== 'assemble') return;
+    // Selections only ever exist alongside a picked drink, so a complete
+    // recipe always has a drink to be judged as.
+    if (!this.craft.drinkId) {
+      this.audio.play('error');
+      this.ui.toast('先在「选杯」里点一杯，配方会自动填好。', 'info', 'cup');
+      return;
+    }
     const selections = this.craft.selections;
     if (selections[key] === value) return;
     switch (key) {
@@ -1822,6 +1986,7 @@ export class Game {
   private clearSelections() {
     if (!this.craft || this.craft.step !== 'assemble') return;
     this.craft.selections = emptySelections();
+    this.craft.drinkId = null;
     this.audio.play('close');
     this.refreshPreview();
     const view = this.craftView();
@@ -1832,7 +1997,11 @@ export class Game {
     if (!this.craft || this.craft.step !== 'assemble') return;
     if (!allSelected(this.craft.selections)) return;
     this.craft.step = 'shake';
-    this.craft.shake = { t: 0, scores: [], done: false, quality: 0, perfect: false };
+    const drink = this.craftDrink();
+    this.craft.shake = createFinish(FINISH_ENGINE[drink?.finish ?? 'shake'], {
+      ease: this.finishEase(),
+      seed: Math.floor(Math.random() * 2 ** 31),
+    });
     this.advanceTutorial(3);
     this.audio.play('open');
     this.preview?.pulse(0.6);
@@ -1844,63 +2013,56 @@ export class Game {
   private updateShake(dt: number) {
     const shake = this.craft?.shake;
     if (!shake) return;
-    shake.t += dt;
-    this.ui.updateShakePointer(this.shakePosition());
-  }
-
-  private shakePosition(): number {
-    const shake = this.craft?.shake;
-    if (!shake) return 0.5;
-    const order = this.player?.orders.find((entry) => entry.id === this.craft?.orderId);
-    const mode = order ? DRINKS_MAP[order.drinkId]?.finish ?? 'shake' : 'shake';
-    const base = mode === 'blend' ? 0.78 : mode === 'scoop' ? 1.12 : 0.98;
-    const speed = base + shake.scores.length * 0.09;
-    const phase = (shake.t * speed) % 2;
-    return phase < 1 ? phase : 2 - phase;
+    const events = tickFinish(shake, dt);
+    if (events.length) this.onShopFinishEvents(events);
+    this.ui.updateFinish(finishFrame(shake));
   }
 
   private tapShake() {
-    if (!this.craft || this.craft.step !== 'shake' || !this.craft.shake) return;
-    const order = this.player?.orders.find((entry) => entry.id === this.craft?.orderId);
-    const drink = order ? DRINKS_MAP[order.drinkId] : undefined;
-    const needed = drink ? this.tapsNeededFor(drink) : 3;
+    const shake = this.activeShake();
+    if (!shake) return;
+    const events = pressFinish(shake);
+    if (events.length) this.onShopFinishEvents(events);
+  }
+
+  private releaseShake() {
+    const shake = this.activeShake();
+    if (!shake) return;
+    const events = releaseFinish(shake);
+    if (events.length) this.onShopFinishEvents(events);
+  }
+
+  private activeShake(): FinishState | null {
+    if (this.overlay !== 'craft' || this.craft?.step !== 'shake') return null;
     const shake = this.craft.shake;
-    if (shake.done || shake.scores.length >= needed) return;
-    const pos = this.shakePosition();
-    const zone = this.shakeZone();
-    const dist = Math.abs(pos - 0.5);
-    let score: number;
-    if (dist <= zone * 0.22) {
-      score = 1;
-    } else if (dist <= zone) {
-      score = 1 - ((dist - zone * 0.22) / (zone * 0.78)) * 0.26;
-    } else {
-      score = Math.max(0.12, 0.72 - (dist - zone) * 1.5);
+    return shake && !shake.done ? shake : null;
+  }
+
+  private onShopFinishEvents(events: FinishEvent[]) {
+    const shake = this.craft?.shake;
+    if (!shake) return;
+    this.playFinishSfx(events, shake.engine);
+    let scored = false;
+    for (const event of events) {
+      if (event.type === 'score') {
+        scored = true;
+        this.preview?.pulse(event.grade === 'perfect' ? 0.9 : 0.45);
+      } else if (event.type === 'done') {
+        this.preview?.pulse(1);
+        // Players tapping to the beat keep tapping; don't let those taps land on 「完成」.
+        this.stepGuardUntil = performance.now() + STEP_GUARD_MS;
+      }
     }
-    shake.scores.push(score);
-    const perfectTap = score >= 0.88;
-    if (drink?.finish === 'blend') {
-      this.audio.play(perfectTap ? 'shakePerfect' : 'blend');
-    } else if (drink?.finish === 'scoop') {
-      this.audio.play(perfectTap ? 'shakePerfect' : 'scoop');
-    } else {
-      this.audio.play(perfectTap ? 'shakePerfect' : 'shake');
-    }
-    this.preview?.pulse(perfectTap ? 0.9 : 0.45);
-    if (shake.scores.length >= needed) {
-      shake.done = true;
-      shake.quality = shake.scores.reduce((sum, value) => sum + value, 0) / shake.scores.length;
-      shake.perfect = shake.quality >= 0.84;
-      this.audio.play('accept');
-      this.preview?.pulse(1);
-    }
+    if (!scored) return;
     const view = this.craftView();
     if (view) this.ui.updateCraft(view);
   }
 
   private finishShake() {
     if (!this.craft || !this.craft.shake?.done) return;
+    if (performance.now() < this.stepGuardUntil) return;
     this.craft.step = 'ready';
+    this.stepGuardUntil = performance.now() + STEP_GUARD_MS;
     this.audio.play('accept');
     this.advanceTutorial(4);
     if (!this.save.tutorialSeen) {
@@ -1922,41 +2084,56 @@ export class Game {
     const craft = this.craft;
     if (!craft || craft.step !== 'ready') return;
     const order = this.player?.orders.find((entry) => entry.id === craft.orderId);
-    if (!order?.delivery || !order.delivery.packaging.includes(id)) return;
-    const wasComplete = order.delivery.packaging.every((item) => craft.packed.includes(item));
+    if (!order?.delivery) return;
+    const required = order.delivery.packaging;
+    if (!packingShelf(required).includes(id)) return;
+    const label = PACKAGING_META[id]?.label ?? id;
     if (craft.packed.includes(id)) {
       craft.packed = craft.packed.filter((item) => item !== id);
+      this.audio.play('pack');
+    } else if (!required.includes(id)) {
+      craft.packWrong += 1;
+      this.audio.play('error');
+      this.ui.toast(`这一单用不上「${label}」，拿回架子上啦。`, 'warning', 'delivery');
+    } else if (id === 'bag' && required.some((item) => item !== 'bag' && !craft.packed.includes(item))) {
+      this.audio.play('error');
+      this.ui.toast('袋子先别封口，还有东西没装进去。', 'warning', 'delivery');
     } else {
       craft.packed.push(id);
+      this.audio.play('pack');
+      if (required.every((item) => craft.packed.includes(item))) {
+        this.ui.toast('打包完成，可以交给骑手啦！', 'success', 'check');
+      }
     }
-    this.audio.play('pack');
-    const complete = order.delivery.packaging.every((item) => craft.packed.includes(item));
-    if (complete && !wasComplete) this.ui.toast('打包完成，可以交给骑手啦！', 'success', 'check');
     const view = this.craftView();
     if (view) this.ui.updateCraft(view);
   }
 
   private serve() {
     if (!this.craft || this.craft.step !== 'ready') return;
+    if (performance.now() < this.stepGuardUntil) return;
     const p = this.player;
     if (!p) return;
     const order = p.orders.find((entry) => entry.id === this.craft?.orderId);
     if (!order || !allSelected(this.craft.selections)) return;
     const customer = CUSTOMERS_MAP[order.customerId];
-    const drink = DRINKS_MAP[order.drinkId];
-    if (!customer || !drink) return;
+    const orderDrink = DRINKS_MAP[order.drinkId];
+    const chosen = this.craftDrink();
+    if (!customer || !orderDrink || !chosen) return;
 
-    const packagingTotal = order.delivery?.packaging.length ?? 0;
-    const packagingDone = order.delivery?.packaging.filter((id) => this.craft?.packed.includes(id)).length ?? 0;
-    if (order.channel === 'delivery' && packagingDone < packagingTotal) {
+    const required = order.delivery?.packaging ?? [];
+    const packagingTotal = required.length;
+    if (order.channel === 'delivery' && !required.every((id) => this.craft?.packed.includes(id))) {
       this.audio.play('error');
       this.ui.toast('还有东西没装进袋子，骑手不能取餐哦。', 'warning', 'delivery');
       return;
     }
-    const packagingScore = packagingTotal > 0 ? packagingDone / packagingTotal : 1;
+    const packagingWrong = this.craft.packWrong;
+    const packagingScore = packagingTotal > 0 ? Math.max(0, 1 - packagingWrong * 0.15) : 1;
 
     const made: Recipe = { ...this.craft.selections };
-    const comparison = compareRecipe(order.request, made);
+    const { target, drinkOk, favorite, wishMatched } = resolveTarget(order, chosen, customer);
+    const comparison = compareRecipe(target, made);
     const shake = this.craft.shake;
     const shakeQuality = shake?.quality ?? 0;
     const perfectShake = shake?.perfect ?? false;
@@ -1964,7 +2141,8 @@ export class Game {
 
     const displayMult = 1 + this.save.upgrades.display * 0.07;
     const signLevel = this.save.upgrades.sign;
-    const base = drink.price * displayMult;
+    // A wish is priced by whichever fitting drink the player chose.
+    const base = (drinkOk ? chosen : orderDrink).price * displayMult;
     let payout = 0;
     let tip = 0;
     if (perfect) {
@@ -1982,6 +2160,8 @@ export class Game {
     }
     if (order.rush) payout += 6;
     if (order.tipBonus > 0) tip += Math.round(base * order.tipBonus);
+    if (order.kind === 'wish' && drinkOk) tip += Math.round(base * (0.15 + (favorite ? 0.1 : 0)));
+    if (order.kind === 'usual' && perfect) tip += Math.round(base * 0.25);
 
     let deliveryFee = 0;
     let deliveryRating = 0;
@@ -1992,7 +2172,10 @@ export class Game {
       else if (comparison.matches >= 5) deliveryRating = patienceRatio > 0.18 ? 2 : 1;
       else deliveryRating = 1;
       if (patienceRatio < 0.12) deliveryRating = Math.min(deliveryRating, 2);
+      if (packagingWrong >= 3) deliveryRating = 1;
+      else if (packagingWrong >= 1) deliveryRating = Math.min(deliveryRating, 2);
       tip += deliveryRating * 3;
+      if (deliveryRating === 3) p.delivery3Today += 1;
     }
 
     const supply = this.suppliesBuff();
@@ -2013,9 +2196,18 @@ export class Game {
       this.ui.flash('heart');
       this.ui.hurtHud();
     }
+    let rapportGain = 0;
     if (perfect) {
       p.perfectToday += 1;
-      this.save.regulars[customer.id] = Math.min(99, (this.save.regulars[customer.id] ?? 0) + 1);
+      rapportGain += 1;
+      this.save.lastOrders[customer.id] = { drinkId: chosen.id, recipe: { ...made }, day: this.config.day };
+    }
+    if (favorite) rapportGain += 1;
+    if (rapportGain > 0) {
+      this.save.regulars[customer.id] = Math.min(99, (this.save.regulars[customer.id] ?? 0) + rapportGain);
+    }
+    if (comparison.matches >= 5 && !p.categoriesServed.includes(chosen.category)) {
+      p.categoriesServed.push(chosen.category);
     }
     const earned = payout + tip + deliveryFee;
     p.revenue += earned;
@@ -2033,7 +2225,7 @@ export class Game {
     p.completedOrders.push({
       id: order.id,
       customerId: order.customerId,
-      drinkId: order.drinkId,
+      drinkId: chosen.id,
       payout,
       matches: comparison.matches,
       total: comparison.total,
@@ -2042,6 +2234,8 @@ export class Game {
 
     const result: ServeResult = {
       order,
+      chosenDrinkId: chosen.id,
+      target,
       matches: comparison.matches,
       total: comparison.total,
       matched: comparison.matched,
@@ -2055,11 +2249,16 @@ export class Game {
       deliveryRating,
       packagingScore,
       packagingTotal,
+      packagingWrong,
+      drinkOk,
+      favorite,
+      wishMatched,
+      rapportGain,
     };
 
     order.status = 'served';
     if (order.channel === 'dine-in') {
-      this.scene.serveCustomer(order.id, order.drinkId, made.topping);
+      this.scene.serveCustomer(order.id, chosen.id, made.topping);
     }
     p.orders = p.orders.filter((entry) => entry.id !== order.id);
     this.craftDrafts.delete(order.id);
@@ -2090,7 +2289,7 @@ export class Game {
       result,
       order,
       customer,
-      drink,
+      drink: chosen,
       made,
       quote,
       coins: this.save.coins,
@@ -2101,16 +2300,19 @@ export class Game {
     this.ui.showServeResult(view);
     this.ui.updateHud(this.hudState());
     persistSave(this.save);
+    this.checkChallenge();
   }
 
   private closeCraft() {
     if (!this.craft) return;
     const order = this.player?.orders.find((entry) => entry.id === this.craft?.orderId);
     this.craftDrafts.set(this.craft.orderId, {
+      drinkId: this.craft.drinkId,
       step: this.craft.step,
       selections: { ...this.craft.selections },
-      shake: this.craft.shake ? { ...this.craft.shake, scores: [...this.craft.shake.scores] } : null,
+      shake: this.craft.shake ? cloneFinish(this.craft.shake) : null,
       packed: [...this.craft.packed],
+      packWrong: this.craft.packWrong,
     });
     if (order && order.status === 'in-craft') order.status = 'waiting';
     this.craft = null;
@@ -2125,7 +2327,7 @@ export class Game {
 
   // ───────────────────────────────────────── overlays
 
-  private openNotebook() {
+  private openNotebook(tab?: NotebookTab) {
     if (this.screen !== 'playing' || this.overlay) return;
     const p = this.player;
     if (!p) return;
@@ -2136,6 +2338,7 @@ export class Game {
     const view: NotebookView = {
       day: this.config.day,
       themeName: this.config.theme.name,
+      revealName: revealsDrinkName(this.config.day, this.save.tutorialSeen),
       orders: p.orders
         .filter((order) => order.accepted && order.status === 'waiting')
         .map((order) => ({
@@ -2148,16 +2351,33 @@ export class Game {
         .map((id) => CUSTOMERS_MAP[id])
         .filter((customer): customer is CustomerDef => !!customer),
       regulars: { ...this.save.regulars },
+      lastOrders: { ...this.save.lastOrders },
       unlocked: this.unlockedDrinks(),
       totalServed: this.save.servedTotal,
     };
-    this.ui.showNotebook(view);
+    this.ui.showNotebook(view, tab);
+  }
+
+  private pauseView(): PauseView | null {
+    const p = this.player;
+    if (!p) return null;
+    return {
+      day: this.config.day,
+      revenue: p.revenue,
+      goal: this.config.goal,
+      hearts: p.hearts,
+      sound: this.save.sound,
+      music: this.save.music,
+      supplies: this.supplyDefs(this.supplyIds()),
+      travelBonus: this.travelBonus(),
+      challenge: challengeProgress(this.config.challenge, p),
+    };
   }
 
   private openPause() {
     if (this.screen !== 'playing' || this.overlay) return;
-    const p = this.player;
-    if (!p) return;
+    const view = this.pauseView();
+    if (!view) return;
     this.overlay = 'pause';
     this.signBeforePause = this.storeOpen;
     this.storeOpen = false;
@@ -2165,15 +2385,7 @@ export class Game {
     this.scene.setInteractive(false);
     this.ui.setOverlayActive(true);
     this.audio.play('open');
-    this.ui.showPause({
-      day: this.config.day,
-      revenue: p.revenue,
-      goal: this.config.goal,
-      hearts: p.hearts,
-      sound: this.save.sound,
-      supplies: this.supplyDefs(this.supplyIds()),
-      travelBonus: this.travelBonus(),
-    });
+    this.ui.showPause(view);
   }
 
   private resume() {
@@ -2211,18 +2423,8 @@ export class Game {
     if (this.helpOrigin === 'pause') {
       this.helpOrigin = null;
       this.overlay = 'pause';
-      const p = this.player;
-      if (p) {
-        this.ui.showPause({
-          day: this.config.day,
-          revenue: p.revenue,
-          goal: this.config.goal,
-          hearts: p.hearts,
-          sound: this.save.sound,
-          supplies: this.supplyDefs(this.supplyIds()),
-          travelBonus: this.travelBonus(),
-        });
-      }
+      const view = this.pauseView();
+      if (view) this.ui.showPause(view);
       return;
     }
     if (this.helpOrigin === 'title') {
@@ -2379,20 +2581,28 @@ export class Game {
     persistSave(this.save);
     this.ui.setSound(next);
     if (this.overlay === 'pause') {
-      const p = this.player;
-      if (p) {
-        this.ui.showPause({
-          day: this.config.day,
-          revenue: p.revenue,
-          goal: this.config.goal,
-          hearts: p.hearts,
-          sound: next,
-          supplies: this.supplyDefs(this.supplyIds()),
-          travelBonus: this.travelBonus(),
-        });
-      }
+      const view = this.pauseView();
+      if (view) this.ui.showPause(view);
     }
     if (this.screen === 'playing' && this.player) this.ui.updateHud(this.hudState());
+  }
+
+  private toggleMusic() {
+    const next = !this.save.music;
+    this.save.music = next;
+    this.audio.setMusicEnabled(next);
+    // Unlock the AudioContext on this gesture so music can start immediately.
+    if (next) this.audio.unlock();
+    persistSave(this.save);
+    this.ui.setMusic(next);
+    if (this.screen === 'title') {
+      // Re-render the title button icon via setMusic (already done above).
+      return;
+    }
+    if (this.overlay === 'pause') {
+      const view = this.pauseView();
+      if (view) this.ui.showPause(view);
+    }
   }
 
   // ───────────────────────────────────────── input & lifecycle
@@ -2434,10 +2644,12 @@ export class Game {
       return;
     }
     if (event.code === 'Space' || event.key === ' ') {
-      if (this.overlay === 'craft' && this.craft?.step === 'shake') {
+      const target = this.spaceTarget();
+      if (target) {
         event.preventDefault();
         if (event.repeat) return;
-        this.tapShake();
+        if (target === 'shake') this.tapShake();
+        else this.travelTimingTap();
       }
       return;
     }
@@ -2448,6 +2660,30 @@ export class Game {
       }
     }
   };
+
+  /** Space keyup releases a finish press (hold engine: 松手). */
+  private onKeyUp = (event: KeyboardEvent) => {
+    if (event.code !== 'Space' && event.key !== ' ') return;
+    const target = this.spaceTarget();
+    if (!target) return;
+    event.preventDefault();
+    if (target === 'shake') this.releaseShake();
+    else this.travelTimingRelease();
+  };
+
+  /** Losing focus mid-hold would never deliver keyup / pointerup. */
+  private onBlur = () => {
+    this.releaseShake();
+    this.travelTimingRelease();
+  };
+
+  /** Which finish mini-game Space drives right now, if any. */
+  private spaceTarget(): 'shake' | 'travel' | null {
+    if (this.overlay === 'craft' && this.craft?.step === 'shake') return 'shake';
+    const timing = this.travelSession?.timing;
+    if (this.screen === 'travel' && this.travelSession?.phase === 'mini' && timing && !timing.done) return 'travel';
+    return null;
+  }
 
   private onResize = () => {
     window.clearTimeout(this.resizeTimer);

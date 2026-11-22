@@ -16,6 +16,7 @@ import type {
   UpgradeDef,
   UpgradeId,
 } from './types';
+import { challengeFor } from './challenge';
 
 export interface IngredientMeta {
   id: string;
@@ -125,10 +126,13 @@ export const CATEGORY_META: Record<ProductCategory, CategoryMeta> = {
   },
 };
 
-export const FINISH_META: Record<FinishMode, { icon: string; button: string; hint: string; scale: [string, string, string] }> = {
-  shake: { icon: 'shaker', button: '摇！', hint: '指针进入薄荷色区域时摇一下，共三次。', scale: ['太轻', '刚刚好', '太重'] },
-  blend: { icon: 'milkshake', button: '停！', hint: '搅拌刻度经过薄荷区时按下，共两次。', scale: ['太稀', '刚刚好', '太稠'] },
-  scoop: { icon: 'icecream', button: '放！', hint: '舀球落点进入中心时放下，共三球。', scale: ['偏左', '刚刚好', '偏右'] },
+export const FINISH_META: Record<
+  FinishMode,
+  { icon: string; button: string; control: string; hint: string; scale: [string, string, string] }
+> = {
+  shake: { icon: 'shaker', button: '摇！', control: 'SPACE / 点按', hint: '音符滑进圆圈时按下，跟着节拍摇四下。', scale: ['太早', '正好', '太晚'] },
+  blend: { icon: 'milkshake', button: '按住', control: 'SPACE / 按住', hint: '按住开始搅拌，质地落进薄荷色目标带时松手，共两轮。', scale: ['太稀', '刚刚好', '太稠'] },
+  scoop: { icon: 'icecream', button: '放！', control: 'SPACE / 点按', hint: '勺子对准球堆顶部时放下，越正越稳，共三球。', scale: ['偏左', '正中', '偏右'] },
 };
 
 export interface PackagingMeta {
@@ -146,6 +150,8 @@ export const PACKAGING_META: Record<string, PackagingMeta> = {
   sleeve: { id: 'sleeve', label: '隔热杯套', sub: '奶昔要端稳', icon: 'thermo', color: '#ffd06f' },
   guard: { id: 'guard', label: '防融盖', sub: '冰淇淋怕热', icon: 'icecream', color: '#ffb08c' },
   spoon: { id: 'spoon', label: '小勺', sub: '记得配一把', icon: 'spoon', color: '#c9a7dc' },
+  napkin: { id: 'napkin', label: '纸巾', sub: '客人说要多两张', icon: 'napkin', color: '#bfe3f0' },
+  card: { id: 'card', label: '手写小卡', sub: '写上客人想说的话', icon: 'postcard', color: '#ffc6a6' },
 };
 
 export const PACKAGING_BY_CATEGORY: Record<ProductCategory, string[]> = {
@@ -167,23 +173,25 @@ export const DELIVERY_ADDRESSES = [
   '橘子汽水杂货铺',
 ];
 
-export const DELIVERY_NOTES = [
-  '麻烦少冰，谢谢！',
-  '不用打电话，放门口就好～',
-  '骑手辛苦了，慢慢来。',
-  '吸管请单独装，谢谢！',
-  '今天想喝甜一点。',
-  '给加班的自己点的。',
-  '杯套多套一层可以吗？',
-  '如果洒了也没关系，安全第一。',
-];
+export interface DeliveryNote {
+  text: string;
+  /** Notes that change the order itself, so the slip chips agree with them. */
+  ice?: IceType;
+  sugar?: SugarType;
+  /** Extra packing item the guest asked for. */
+  extra?: string;
+}
 
-export const REGULAR_WISHES = [
-  '今天想喝到你记得的那杯。',
-  '想尝尝你新调的味道。',
-  '今天有点累，想要甜甜的。',
-  '还是老样子，拜托啦。',
-  '想喝一杯有阳光味道的。',
+export const DELIVERY_NOTES: DeliveryNote[] = [
+  { text: '麻烦少冰，谢谢！', ice: 'less' },
+  { text: '不用打电话，放门口就好～' },
+  { text: '骑手辛苦了，慢慢来。' },
+  { text: '今天想喝甜一点。', sugar: 'full' },
+  { text: '给加班的自己点的。' },
+  { text: '杯套多套一层可以吗？', extra: 'sleeve' },
+  { text: '多给两张纸巾，谢谢！', extra: 'napkin' },
+  { text: '帮我写一句「生日快乐」，可以吗？', extra: 'card' },
+  { text: '如果洒了也没关系，安全第一。' },
 ];
 
 export function categoryOf(drink: DrinkDef | undefined): ProductCategory {
@@ -231,6 +239,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '招牌',
     category: 'tea',
     finish: 'shake',
+    tags: ['milky', 'rich', 'chewy'],
     recipe: { tea: 'none', milk: 'fresh', flavor: 'brownsugar', topping: 'pearl', ice: 'normal', sugar: 'full', size: 'medium' },
   },
   {
@@ -246,6 +255,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '人气',
     category: 'tea',
     finish: 'shake',
+    tags: ['fruity', 'tea', 'fresh'],
     recipe: { tea: 'oolong', milk: 'none', flavor: 'peach', topping: 'none', ice: 'less', sugar: 'half', size: 'medium' },
   },
   {
@@ -260,6 +270,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 1,
     category: 'tea',
     finish: 'shake',
+    tags: ['fruity', 'pink', 'milky', 'chewy'],
     recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'strawberry', topping: 'pearl', ice: 'less', sugar: 'half', size: 'medium' },
   },
   {
@@ -274,6 +285,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 1,
     category: 'tea',
     finish: 'shake',
+    tags: ['matcha', 'tea', 'fresh', 'chewy'],
     recipe: { tea: 'matcha', milk: 'coconut', flavor: 'none', topping: 'jelly', ice: 'normal', sugar: 'half', size: 'medium' },
   },
   {
@@ -288,6 +300,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 2,
     category: 'tea',
     finish: 'shake',
+    tags: ['floral', 'tea', 'milky'],
     recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'osmanthus', topping: 'none', ice: 'hot', sugar: 'half', size: 'medium' },
   },
   {
@@ -302,6 +315,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 3,
     category: 'tea',
     finish: 'shake',
+    tags: ['milky', 'tea', 'rich', 'chewy'],
     recipe: { tea: 'assam', milk: 'fresh', flavor: 'none', topping: 'taro', ice: 'normal', sugar: 'half', size: 'large' },
   },
   {
@@ -316,6 +330,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 4,
     category: 'tea',
     finish: 'shake',
+    tags: ['rich', 'chewy', 'fresh'],
     recipe: { tea: 'none', milk: 'coconut', flavor: 'brownsugar', topping: 'jelly', ice: 'normal', sugar: 'half', size: 'medium' },
   },
   {
@@ -331,6 +346,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '季节',
     category: 'tea',
     finish: 'shake',
+    tags: ['matcha', 'fruity', 'tea', 'creamy'],
     recipe: { tea: 'matcha', milk: 'none', flavor: 'strawberry', topping: 'cheese', ice: 'less', sugar: 'half', size: 'medium' },
   },
   {
@@ -345,6 +361,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 6,
     category: 'tea',
     finish: 'shake',
+    tags: ['fruity', 'pink', 'milky', 'chewy'],
     recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'peach', topping: 'taro', ice: 'normal', sugar: 'half', size: 'large' },
   },
   {
@@ -360,6 +377,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '新品',
     category: 'milkshake',
     finish: 'blend',
+    tags: ['fruity', 'pink', 'creamy'],
     recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'strawberry', topping: 'cheese', ice: 'less', sugar: 'half', size: 'medium' },
   },
   {
@@ -375,6 +393,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '新品',
     category: 'icecream',
     finish: 'scoop',
+    tags: ['fruity', 'pink', 'creamy'],
     recipe: { tea: 'none', milk: 'fresh', flavor: 'peach', topping: 'jelly', ice: 'normal', sugar: 'half', size: 'medium' },
   },
   {
@@ -390,6 +409,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '新品',
     category: 'milkshake',
     finish: 'blend',
+    tags: ['creamy', 'rich', 'chewy'],
     recipe: { tea: 'assam', milk: 'fresh', flavor: 'none', topping: 'taro', ice: 'less', sugar: 'half', size: 'large' },
   },
   {
@@ -404,6 +424,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 4,
     category: 'icecream',
     finish: 'scoop',
+    tags: ['matcha', 'creamy'],
     recipe: { tea: 'matcha', milk: 'none', flavor: 'none', topping: 'cheese', ice: 'less', sugar: 'half', size: 'medium' },
   },
   {
@@ -418,6 +439,7 @@ export const DRINKS: DrinkDef[] = [
     unlockDay: 6,
     category: 'icecream',
     finish: 'scoop',
+    tags: ['rich', 'creamy', 'chewy'],
     recipe: { tea: 'none', milk: 'fresh', flavor: 'brownsugar', topping: 'pearl', ice: 'normal', sugar: 'full', size: 'medium' },
   },
   {
@@ -433,6 +455,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '城市限定',
     category: 'tea',
     finish: 'shake',
+    tags: ['rich', 'milky', 'tea'],
     source: 'city',
     recipe: { tea: 'assam', milk: 'fresh', flavor: 'brownsugar', topping: 'cheese', ice: 'less', sugar: 'half', size: 'medium' },
   },
@@ -449,6 +472,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '城市限定',
     category: 'tea',
     finish: 'shake',
+    tags: ['floral', 'fresh', 'chewy', 'tea'],
     source: 'city',
     recipe: { tea: 'jasmine', milk: 'none', flavor: 'osmanthus', topping: 'jelly', ice: 'less', sugar: 'half', size: 'medium' },
   },
@@ -465,6 +489,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '城市限定',
     category: 'milkshake',
     finish: 'blend',
+    tags: ['tea', 'creamy', 'rich'],
     source: 'city',
     recipe: { tea: 'oolong', milk: 'fresh', flavor: 'brownsugar', topping: 'cheese', ice: 'less', sugar: 'half', size: 'large' },
   },
@@ -481,6 +506,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '旅行限定',
     category: 'tea',
     finish: 'shake',
+    tags: ['fruity', 'fresh', 'tea'],
     source: 'travel',
     recipe: { tea: 'oolong', milk: 'none', flavor: 'peach', topping: 'none', ice: 'normal', sugar: 'half', size: 'large' },
   },
@@ -497,6 +523,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '旅行限定',
     category: 'tea',
     finish: 'shake',
+    tags: ['matcha', 'milky', 'tea'],
     source: 'travel',
     recipe: { tea: 'matcha', milk: 'fresh', flavor: 'none', topping: 'jelly', ice: 'less', sugar: 'half', size: 'large' },
   },
@@ -513,6 +540,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '旅行限定',
     category: 'tea',
     finish: 'shake',
+    tags: ['floral', 'milky'],
     source: 'travel',
     recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'osmanthus', topping: 'none', ice: 'hot', sugar: 'half', size: 'medium' },
   },
@@ -529,6 +557,7 @@ export const DRINKS: DrinkDef[] = [
     badge: '旅行限定',
     category: 'milkshake',
     finish: 'blend',
+    tags: ['fruity', 'pink', 'creamy', 'chewy'],
     source: 'travel',
     recipe: { tea: 'jasmine', milk: 'fresh', flavor: 'peach', topping: 'pearl', ice: 'less', sugar: 'half', size: 'large' },
   },
@@ -549,14 +578,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'twintails',
     accessory: 'star',
     quote: '今天的桃桃，也要甜甜的！',
-    chat: {
-      line: '今天的桃桃，也要甜甜的！店长，你开店多久啦？',
-      options: [
-        { label: '刚开不久，请多关照。', reply: '那我要当你的第一位常客！给你一颗桃心。' },
-        { label: '为一杯好奶茶，慢慢学。', reply: '认真的人做出来的奶茶，一定很好喝！' },
-        { label: '秘密，先尝尝今天的桃桃？', reply: '哈哈，那我用味蕾来调查！' },
-      ],
-    },
+    chats: [
+      {
+        id: 'momo-0',
+        minRapport: 0,
+        line: '今天的桃桃，也要甜甜的！店长，你开店多久啦？',
+        options: [
+          { label: '刚开不久，请多关照。', reply: '那我要当你的第一位常客！给你一颗桃心。', liked: true },
+          { label: '为一杯好奶茶，慢慢学。', reply: '认真的人做出来的奶茶，一定很好喝！' },
+          { label: '秘密，先尝尝今天的桃桃？', reply: '哈哈，那我用味蕾来调查！' },
+        ],
+      },
+      {
+        id: 'momo-1',
+        minRapport: 2,
+        line: '下期杂志想做「街角甜品地图」，你家能上封面吗？',
+        options: [
+          { label: '当然！我做最好看的一杯。', reply: '那拍照那天，我要第一个喝！', liked: true },
+          { label: '封面太紧张，放角落吧。', reply: '角落也会被我写得闪闪发光的！' },
+          { label: '要先问问主编吧？', reply: '主编那边，我会去好好说服的！' },
+        ],
+      },
+      {
+        id: 'momo-2',
+        minRapport: 4,
+        line: '截稿前一晚好焦虑…店长，你也有不想开门的时候吗？',
+        options: [
+          { label: '有呀，但看到你们就好了。', reply: '…那我以后要更常来，帮你打气！', liked: true },
+          { label: '先睡一觉，明天再写。', reply: '嗯，听店长的，今晚先好好睡。' },
+          { label: '喝完这杯，灵感就来。', reply: '好！那这杯我要喝得慢一点。' },
+        ],
+      },
+      {
+        id: 'momo-3',
+        minRapport: 7,
+        line: '新一期出刊啦！第一页写的就是你的小店，要看吗？',
+        options: [
+          { label: '要！可以签名送我吗？', reply: '早就签好啦！旁边还画了一颗桃心。', liked: true },
+          { label: '有点害羞，晚点偷偷看。', reply: '那我把它放在柜台上就跑～' },
+          { label: '写了什么？念给我听。', reply: '「街角有一家，会记住你口味的店。」' },
+        ],
+      },
+    ],
     lines: {
       perfect: '哇！就是这个味道！我要写进下一期杂志！',
       good: '嗯嗯，好喝～不过好像少了一点点什么？',
@@ -575,6 +638,13 @@ export const CUSTOMERS: CustomerDef[] = [
       eyes: '#c76184',
     },
     minDay: 1,
+    taste: {
+      favorites: ['peach_oolong', 'peach_softserve', 'peach_taro', 'star_peach_shake'],
+      tags: ['pink', 'fruity', 'creamy'],
+      sugar: 'full',
+      ice: 'less',
+      size: 'medium',
+    },
   },
   {
     id: 'kuri',
@@ -585,14 +655,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'short',
     accessory: 'beret',
     quote: '刚出炉的面包香，和奶茶很配吧？',
-    chat: {
-      line: '今天烤了好多面包，好累呀。可以给我一杯甜甜的、暖暖的吗？',
-      options: [
-        { label: '今天的订单，我记牢啦。', reply: '嗯！交给你我最放心。' },
-        { label: '面包香不香？改天教我做。', reply: '香！下次带刚出炉的给你！' },
-        { label: '先喝杯奶茶，休息一下。', reply: '嗯…被奶茶治愈了。' },
-      ],
-    },
+    chats: [
+      {
+        id: 'kuri-0',
+        minRapport: 0,
+        line: '今天烤了好多面包，好累呀。可以给我一杯甜甜的、暖暖的吗？',
+        options: [
+          { label: '今天的订单，我记牢啦。', reply: '嗯！交给你我最放心。' },
+          { label: '面包香不香？改天教我做。', reply: '香！下次带刚出炉的给你！' },
+          { label: '先喝杯奶茶，休息一下。', reply: '嗯…被奶茶治愈了。', liked: true },
+        ],
+      },
+      {
+        id: 'kuri-1',
+        minRapport: 2,
+        line: '师傅说我的可颂层次不够，可我已经折了二十七次了…',
+        options: [
+          { label: '二十七次，已经很厉害了。', reply: '…被你这么一说，好像还能再折一次。', liked: true },
+          { label: '面团冰一下再折试试？', reply: '咦，冰一下？我回去马上试试看！' },
+          { label: '下次带来给我尝尝？', reply: '好呀，就算失败了也给你留一个。' },
+        ],
+      },
+      {
+        id: 'kuri-2',
+        minRapport: 4,
+        line: '今天师傅第一次让我一个人守烤箱！手心一直在出汗。',
+        options: [
+          { label: '他一定很信任你。', reply: '嗯！我会守好每一炉，不让他失望。', liked: true },
+          { label: '烤焦了也没关系哦。', reply: '呜，不许乌鸦嘴！…不过谢谢你。' },
+          { label: '紧张就多喝点水。', reply: '嗯！奶茶也算水吧？就算吧！' },
+        ],
+      },
+      {
+        id: 'kuri-3',
+        minRapport: 7,
+        line: '师傅说下个月起，橱窗里会有一款我自己的面包！',
+        options: [
+          { label: '恭喜！我要第一个买。', reply: '不用买！第一个，本来就是留给你的。', liked: true },
+          { label: '它叫什么名字？', reply: '还没想好…叫「桃桃小圆包」好不好？' },
+          { label: '那要配哪杯奶茶？', reply: '当然是你做的这杯，我早就想好啦。' },
+        ],
+      },
+    ],
     lines: {
       perfect: '好幸福！像刚出炉的面包一样幸福！',
       good: '好喝！喝完又有力气揉面团了。',
@@ -611,6 +715,13 @@ export const CUSTOMERS: CustomerDef[] = [
       eyes: '#6f4e38',
     },
     minDay: 1,
+    taste: {
+      favorites: ['black_sugar', 'caramel_pudding', 'osmanthus_milk', 'brownsugar_icecream'],
+      tags: ['rich', 'milky', 'chewy'],
+      sugar: 'full',
+      ice: 'hot',
+      size: 'medium',
+    },
   },
   {
     id: 'yuzu',
@@ -621,14 +732,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'bob',
     accessory: 'ribbon',
     quote: '放学后的第一杯，要粉粉的！',
-    chat: {
-      line: '放学后的第一杯！可是今天数学考得不好…',
-      options: [
-        { label: '那就喝点甜的，奖励自己。', reply: '好！甜的可以打败数学题！' },
-        { label: '下次考好，我请你喝。', reply: '一言为定！我会努力！' },
-        { label: '要不要加一份小料？', reply: '要要要！小料是治愈魔法！' },
-      ],
-    },
+    chats: [
+      {
+        id: 'yuzu-0',
+        minRapport: 0,
+        line: '放学后的第一杯！可是今天数学考得不好…',
+        options: [
+          { label: '那就喝点甜的，奖励自己。', reply: '好！甜的可以打败数学题！' },
+          { label: '下次考好，我请你喝。', reply: '一言为定！我会努力！', liked: true },
+          { label: '要不要加一份小料？', reply: '要要要！小料是治愈魔法！' },
+        ],
+      },
+      {
+        id: 'yuzu-1',
+        minRapport: 2,
+        line: '这次小测进步了十分！虽然…还是没及格。',
+        options: [
+          { label: '进步十分，超厉害的！', reply: '对吧对吧！我就知道你会这么说！', liked: true },
+          { label: '下次一定能及格。', reply: '嗯！我要把这句话贴在铅笔盒上。' },
+          { label: '今天要庆祝一下吗？', reply: '要！今天这杯，就是我的庆功宴！' },
+        ],
+      },
+      {
+        id: 'yuzu-2',
+        minRapport: 4,
+        line: '同桌搬去别的城市了，以后放学只剩我一个人走。',
+        options: [
+          { label: '那就每天来这里坐坐。', reply: '…嗯。这里的灯，比路灯暖和。', liked: true },
+          { label: '给她写信吧。', reply: '好主意！我要在信上画一杯奶茶。' },
+          { label: '今天多加一份小料。', reply: '谢谢店长…小料魔法有一点点用。' },
+        ],
+      },
+      {
+        id: 'yuzu-3',
+        minRapport: 7,
+        line: '我考上想去的高中啦！第一个就想来告诉你！',
+        options: [
+          { label: '太好了！这杯我请。', reply: '哇！店长说话算话！我会记一辈子！', liked: true },
+          { label: '以后还会常来吗？', reply: '当然！新学校的路，也会经过这里。' },
+          { label: '爸爸妈妈一定很开心。', reply: '嗯！可我还是想先告诉你。' },
+        ],
+      },
+    ],
     lines: {
       perfect: '满分！今天的快乐已经充值成功！',
       good: '还不错嘛，下次要不要试试加料？',
@@ -647,6 +792,13 @@ export const CUSTOMERS: CustomerDef[] = [
       eyes: '#4e9e81',
     },
     minDay: 1,
+    taste: {
+      favorites: ['strawberry_bobo', 'strawberry_shake', 'matcha_berry', 'peach_taro'],
+      tags: ['pink', 'fruity', 'chewy'],
+      sugar: 'half',
+      ice: 'less',
+      size: 'large',
+    },
   },
   {
     id: 'tsukimi',
@@ -657,14 +809,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'long',
     accessory: 'clip',
     quote: '一杯温热的，慢慢喝。',
-    chat: {
-      line: '今晚图书馆闭馆晚，想带一杯回去。',
-      options: [
-        { label: '温热的，慢慢喝。', reply: '谢谢。你总是记得温度。' },
-        { label: '加班辛苦了，今晚也加油。', reply: '有这句话，书页都轻了一些。' },
-        { label: '月亮很圆，适合早点休息。', reply: '嗯。喝完这杯就回去。' },
-      ],
-    },
+    chats: [
+      {
+        id: 'tsukimi-0',
+        minRapport: 0,
+        line: '今晚图书馆闭馆晚，想带一杯回去。',
+        options: [
+          { label: '温热的，慢慢喝。', reply: '谢谢。你总是记得温度。', liked: true },
+          { label: '加班辛苦了，今晚也加油。', reply: '有这句话，书页都轻了一些。' },
+          { label: '月亮很圆，适合早点休息。', reply: '嗯。喝完这杯就回去。' },
+        ],
+      },
+      {
+        id: 'tsukimi-1',
+        minRapport: 2,
+        line: '今天有人还了一本借了十年的书。书页里夹着一片银杏。',
+        options: [
+          { label: '那片叶子，也等了十年。', reply: '……嗯。我把它夹回了原来那一页。', liked: true },
+          { label: '他一定很不好意思吧。', reply: '他鞠了三个躬。我说，书不会生气。' },
+          { label: '图书馆会罚款吗？', reply: '按规定会。不过今天，我忘记算了。' },
+        ],
+      },
+      {
+        id: 'tsukimi-2',
+        minRapport: 4,
+        line: '夜里的图书馆很安静。有时会觉得，世界只剩我一个人。',
+        options: [
+          { label: '这里的灯，也为你亮着。', reply: '……谢谢。值夜班时，我会想起这盏灯。', liked: true },
+          { label: '要不要小声放点音乐？', reply: '馆里不能放。不过，我可以轻轻哼。' },
+          { label: '累了就早点下班吧。', reply: '嗯。书们会理解的。' },
+        ],
+      },
+      {
+        id: 'tsukimi-3',
+        minRapport: 7,
+        line: '推荐书架上，我留了一格给你。写着「茶屋店长选」。',
+        options: [
+          { label: '那我挑一本温暖的书。', reply: '好。我在它旁边放一张月亮书签。', liked: true },
+          { label: '我…不太会选书呢。', reply: '没关系。你挑的，一定是温柔的。' },
+          { label: '放一本奶茶食谱吧！', reply: '……可以。借的人一定会很多。' },
+        ],
+      },
+    ],
     lines: {
       perfect: '很温柔的味道。今晚可以安心加班了。',
       good: '谢谢，味道不错。温度也刚刚好。',
@@ -683,6 +869,13 @@ export const CUSTOMERS: CustomerDef[] = [
       eyes: '#8b70c0',
     },
     minDay: 2,
+    taste: {
+      favorites: ['osmanthus_milk', 'snow_osmanthus', 'mist_matcha'],
+      tags: ['floral', 'milky', 'tea'],
+      sugar: 'half',
+      ice: 'hot',
+      size: 'medium',
+    },
   },
   {
     id: 'usui',
@@ -693,14 +886,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'fluffy',
     accessory: 'scarf',
     quote: '糖少一点，灵感多一点。',
-    chat: {
-      line: '在调一个新的数值，糖度也想试试新参数。',
-      options: [
-        { label: '要不要试试半糖？', reply: '半糖…好，变量少一点，灵感多一点。' },
-        { label: '灵感比配方更重要。', reply: '说得好。这杯算我的灵感来源。' },
-        { label: '先把这一杯喝好，再调游戏。', reply: '合理。现实版本的更新也很重要。' },
-      ],
-    },
+    chats: [
+      {
+        id: 'usui-0',
+        minRapport: 0,
+        line: '在调一个新的数值，糖度也想试试新参数。',
+        options: [
+          { label: '要不要试试半糖？', reply: '半糖…好，变量少一点，灵感多一点。', liked: true },
+          { label: '灵感比配方更重要。', reply: '说得好。这杯算我的灵感来源。' },
+          { label: '先把这一杯喝好，再调游戏。', reply: '合理。现实版本的更新也很重要。' },
+        ],
+      },
+      {
+        id: 'usui-1',
+        minRapport: 2,
+        line: '新游戏卡住了。主角是开奶茶店的猫，该加什么玩法？',
+        options: [
+          { label: '让猫记住每位客人的口味。', reply: '…常客系统。好，写进设计文档。', liked: true },
+          { label: '加一个限时挑战？', reply: '有紧张感。可以先做个原型试试。' },
+          { label: '让猫睡个午觉就好。', reply: '放置玩法？…意外地可行。' },
+        ],
+      },
+      {
+        id: 'usui-2',
+        minRapport: 4,
+        line: '测试版发出去了，评论区一条都没有。是不是做得不好？',
+        options: [
+          { label: '我想先玩一玩。', reply: '……你是第一位玩家。存档我替你留着。', liked: true },
+          { label: '安静不代表不好。', reply: '嗯。也许大家还在加载。' },
+          { label: '多宣传一下吧？', reply: '合理。我去写一条不尴尬的宣传语。' },
+        ],
+      },
+      {
+        id: 'usui-3',
+        minRapport: 7,
+        line: '正式版上线了。片尾感谢名单里，有一行是你的店名。',
+        options: [
+          { label: '我会通关去看那一行。', reply: '那行字后面，还藏了一杯半糖奶茶。', liked: true },
+          { label: '真的可以吗？好开心。', reply: '当然。你是这个项目的灵感来源。' },
+          { label: '下一作也来这里喝茶吧。', reply: '下一作的第一行代码，就在这里写。' },
+        ],
+      },
+    ],
     lines: {
       perfect: '完美参数。这杯可以进我的游戏里。',
       good: '不错，接近理想值了。',
@@ -719,6 +946,13 @@ export const CUSTOMERS: CustomerDef[] = [
       eyes: '#687c9f',
     },
     minDay: 2,
+    taste: {
+      favorites: ['matcha_coco', 'matcha_berry', 'mist_matcha', 'peach_oolong'],
+      tags: ['matcha', 'tea', 'fresh'],
+      sugar: 'zero',
+      ice: 'less',
+      size: 'medium',
+    },
   },
   {
     id: 'alan',
@@ -729,14 +963,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'ponytail',
     accessory: 'glasses',
     quote: '赶时间，正常冰就好！',
-    chat: {
-      line: '刚送完一单，赶时间，但想喝口冰的。',
-      options: [
-        { label: '正常冰，马上给你！', reply: '够爽快！这一单我也给你五星！' },
-        { label: '慢一点也没关系。', reply: '不行不行，习惯了快。不过谢谢你。' },
-        { label: '路上注意安全。', reply: '收到！安全第一，奶茶第二。' },
-      ],
-    },
+    chats: [
+      {
+        id: 'alan-0',
+        minRapport: 0,
+        line: '刚送完一单，赶时间，但想喝口冰的。',
+        options: [
+          { label: '正常冰，马上给你！', reply: '够爽快！这一单我也给你五星！', liked: true },
+          { label: '慢一点也没关系。', reply: '不行不行，习惯了快。不过谢谢你。' },
+          { label: '路上注意安全。', reply: '收到！安全第一，奶茶第二。' },
+        ],
+      },
+      {
+        id: 'alan-1',
+        minRapport: 2,
+        line: '今天跑了四十单！腿已经不是我的腿了。',
+        options: [
+          { label: '四十单！你是城市英雄。', reply: '哈哈！英雄要靠冰奶茶回血！', liked: true },
+          { label: '坐一会儿再走吧。', reply: '就三十秒！…好吧，一分钟。' },
+          { label: '明天少接几单？', reply: '我考虑考虑。不过多半还是会接。' },
+        ],
+      },
+      {
+        id: 'alan-2',
+        minRapport: 4,
+        line: '下雨天送单，最怕奶茶洒了。我总把它揣在怀里。',
+        options: [
+          { label: '难怪你送的都稳稳当当。', reply: '被你发现了！人可以湿，奶茶不行。', liked: true },
+          { label: '下雨就慢慢骑。', reply: '好，雨天我把车速调慢一档。' },
+          { label: '要不要借你一把伞？', reply: '谢啦，骑车撑不了伞！心意收下了。' },
+        ],
+      },
+      {
+        id: 'alan-3',
+        minRapport: 7,
+        line: '我想好了，攒够钱就开一家跑腿铺子。第一单，送你！',
+        options: [
+          { label: '那我天天给你下单。', reply: '一言为定！你的单，永远不超时。', liked: true },
+          { label: '我来帮你设计招牌。', reply: '好啊！要画一杯冒冷气的奶茶。' },
+          { label: '别太累，慢慢攒。', reply: '嗯，这句我记下了，跑得更稳一点。' },
+        ],
+      },
+    ],
     lines: {
       perfect: '够快够准！这一单五星好评！',
       good: '谢啦，差一点点就完美了。',
@@ -755,6 +1023,13 @@ export const CUSTOMERS: CustomerDef[] = [
       eyes: '#506b8b',
     },
     minDay: 3,
+    taste: {
+      favorites: ['peach_oolong', 'sea_peach', 'coconut_jelly', 'matcha_coco'],
+      tags: ['fresh', 'fruity', 'tea'],
+      sugar: 'half',
+      ice: 'normal',
+      size: 'large',
+    },
   },
   {
     id: 'rin',
@@ -765,14 +1040,48 @@ export const CUSTOMERS: CustomerDef[] = [
     hairStyle: 'long',
     accessory: 'clip',
     quote: '让我看看，这家小店真正的实力。',
-    chat: {
-      line: '让我看看，这家小店真正的实力。',
-      options: [
-        { label: '请多指教，我会认真做好每一杯。', reply: '态度不错。味道，我会如实写。' },
-        { label: '今天的配方，值得期待。', reply: '哦？那我可要仔细尝尝。' },
-        { label: '如果你愿意，也可以常来。', reply: '……看你的表现。' },
-      ],
-    },
+    chats: [
+      {
+        id: 'rin-0',
+        minRapport: 0,
+        line: '让我看看，这家小店真正的实力。',
+        options: [
+          { label: '请多指教，我会认真做好每一杯。', reply: '态度不错。味道，我会如实写。', liked: true },
+          { label: '今天的配方，值得期待。', reply: '哦？那我可要仔细尝尝。' },
+          { label: '如果你愿意，也可以常来。', reply: '……看你的表现。' },
+        ],
+      },
+      {
+        id: 'rin-1',
+        minRapport: 2,
+        line: '上一家店的老板，在我面前手抖洒了半杯。你不紧张？',
+        options: [
+          { label: '紧张，但手不会抖。', reply: '……诚实。这一点，可以加分。', liked: true },
+          { label: '你也只是一位客人呀。', reply: '说得轻巧。不过，确实如此。' },
+          { label: '洒了就重做一杯。', reply: '嗯。比假装没洒要好。' },
+        ],
+      },
+      {
+        id: 'rin-2',
+        minRapport: 4,
+        line: '专栏写了十年。说实话，很久没被一杯饮料打动过了。',
+        options: [
+          { label: '那今天让我试试看。', reply: '……好。我会认真喝完这一杯。', liked: true },
+          { label: '也许只是太累了？', reply: '也许吧。评论家也会累的。' },
+          { label: '什么样的会打动你？', reply: '说不清。大概，是记得客人的那种。' },
+        ],
+      },
+      {
+        id: 'rin-3',
+        minRapport: 7,
+        line: '下期专栏叫「我愿意常去的小店」。……别说是我写的。',
+        options: [
+          { label: '我保密，也给你留座位。', reply: '……嗯。靠窗那个，我很喜欢。', liked: true },
+          { label: '这一期可以送我吗？', reply: '早就带来了。夹在第一页，别弄皱。' },
+          { label: '谢谢你，凛。', reply: '……不用谢。是你的茶，值得。' },
+        ],
+      },
+    ],
     lines: {
       perfect: '无可挑剔。你会出现在我的专栏里。',
       good: '尚可。不过距离「惊艳」还差一步。',
@@ -792,6 +1101,13 @@ export const CUSTOMERS: CustomerDef[] = [
     },
     minDay: 3,
     vip: true,
+    taste: {
+      favorites: ['matcha_berry', 'taro_milk', 'caramel_pudding', 'oolong_shake'],
+      tags: ['rich', 'creamy', 'tea'],
+      sugar: 'half',
+      ice: 'less',
+      size: 'medium',
+    },
   },
 ];
 
@@ -830,10 +1146,10 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'training',
-    name: '手摇特训',
-    latin: 'SHAKE CLASS',
-    description: '跟着节拍，摇出云朵般的奶泡。',
-    flavor: '店主偷偷练习了三百次。',
+    name: '收尾特训',
+    latin: 'FINISH CLASS',
+    description: '节拍窗口更宽、搅拌目标带更大、堆球落点更宽容。',
+    flavor: '店主偷偷练习了三百次：摇、搅、堆，一样不落。',
     maxLevel: 2,
     costs: [90, 160],
     accent: '#aacff5',
@@ -923,12 +1239,12 @@ export const TUTORIAL_STEPS = [
   },
   {
     title: '按品类完成收尾',
-    text: '茶饮要手摇，奶昔要搅拌，冰淇淋要堆球。让指针停在薄荷区，越准越香。',
+    text: '茶饮跟着节拍摇，奶昔按住搅拌、在目标带松手，冰淇淋对准球堆顶部落球。越准越香。',
     icon: 'stars',
   },
   {
     title: '外卖记得打包',
-    text: '外卖单出现在右侧外卖台。出杯前把封口、吸管和保温袋一一装好，骑手会给出更高评分。',
+    text: '外卖单会出现在外卖台。出杯后照品类挑包材、留意客人留言里的额外要求，保温袋最后装。',
     icon: 'delivery',
   },
 ];
@@ -940,42 +1256,20 @@ export function getDayConfig(day: number, extraDrinkIds: string[] = []): DayConf
   return {
     day,
     shiftSeconds: Math.min(205, 155 + (day - 1) * 7),
-    goal: 90 + (day - 1) * 70,
-    spawnEvery: Math.max(9.5, 15.5 - (day - 1) * 0.9),
-    deliveryEvery: day >= 2 ? Math.max(15, 26 - (day - 2) * 1.3) : 0,
-    patience: Math.max(42, 63 - (day - 1) * 2),
+    // Plateaus once spawn rate and shift length stop growing, so the goal
+    // tracks what a steady pair of hands can actually serve.
+    goal: Math.min(600, 90 + (day - 1) * 65),
+    spawnEvery: Math.max(11, 17 - (day - 1) * 0.75),
+    deliveryEvery: day >= 2 ? Math.max(20, 30 - (day - 2) * 1.25) : 0,
+    patience: Math.max(50, 66 - (day - 1) * 2),
     vipChance: day >= 3 ? Math.min(0.18, 0.05 + day * 0.012) : 0,
     rushChance: day >= 2 ? Math.min(0.26, 0.07 + day * 0.025) : 0,
+    maxOrders: day <= 3 ? 3 : 4,
     theme,
+    challenge: challengeFor(day, theme),
     unlockedDrinkIds: unlocked.map((d) => d.id),
     newDrinkIds: newDrinks.map((d) => d.id),
   };
-}
-
-export function randomRequest(base: Recipe, day: number, category: ProductCategory = 'tea'): Recipe {
-  const request: Recipe = { ...base };
-  const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-  const roll = Math.random();
-  const coldOnly = category !== 'tea';
-
-  if (roll < 0.48) {
-    request.sugar = pick<SugarType>(['zero', 'half', 'full']);
-  }
-  if (Math.random() < 0.55) {
-    const ices: IceType[] = coldOnly
-      ? ['less', 'normal']
-      : day >= 2
-        ? ['hot', 'less', 'normal']
-        : ['less', 'normal'];
-    request.ice = pick<IceType>(ices);
-  }
-  if (Math.random() < 0.42) {
-    request.size = pick<SizeType>(['medium', 'large']);
-  }
-  if (Math.random() < 0.32) {
-    request.topping = pick<ToppingType>(['pearl', 'jelly', 'taro', 'cheese', 'none']);
-  }
-  return request;
 }
 
 export function compareRecipe(request: Recipe, made: Recipe): { matches: number; total: number; matched: Record<keyof Recipe, boolean> } {
@@ -1023,7 +1317,7 @@ export const UPGRADE_EFFECTS: Record<UpgradeId, (level: number) => string> = {
   seat: (level) => (level === 0 ? '客人耐心 +0%' : `客人耐心 +${level * 10}%`),
   sign: (level) => (level === 0 ? '小费 +0%' : `小费 +${level * 15}%`),
   display: (level) => (level === 0 ? '每杯收入 +0%' : `每杯收入 +${level * 7}%`),
-  training: (level) => (level === 0 ? '手摇判定 +0%' : `手摇判定区 +${level * 18}%`),
+  training: (level) => `收尾判定 +${level * 18}%`,
 };
 
 export const RECIPE_FIELDS: { key: keyof Recipe; label: string; latin: string }[] = [

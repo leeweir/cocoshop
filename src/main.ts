@@ -1,4 +1,8 @@
 import './style.css';
+import './styles/scene-shop.css';
+import './styles/finish.css';
+import './styles/chats.css';
+import './styles/orders.css';
 import { Game } from './game/Game';
 
 function plantPetals() {

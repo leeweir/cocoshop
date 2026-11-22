@@ -63,9 +63,9 @@ export const SUPPLIES: SupplyDef[] = [
     id: 'pearl_pouch',
     name: '珍珠礼袋',
     latin: 'PEARL POUCH',
-    description: '手搓的黑糖珍珠，摇起来手感格外好。',
-    effectLabel: '次日薄荷区 +18%',
-    shortLabel: '薄荷区 +18%',
+    description: '手搓的黑糖珍珠，摇、搅、堆都格外顺手。',
+    effectLabel: '次日收尾判定 +18%',
+    shortLabel: '收尾判定 +18%',
     cost: 30,
     color: '#d5ab84',
     icon: 'top-pearl',
@@ -187,6 +187,8 @@ export interface CityStoryDef {
   title: string;
   text: string;
   choices: CityStoryChoice[];
+  /** Regular this story is about; hidden until the player has met them in the shop. */
+  regular?: string;
 }
 
 const KURI_PUDDING = 'caramel_pudding';
@@ -308,10 +310,111 @@ export const CITY_STORIES: CityStoryDef[] = [
       },
     ],
   },
+  {
+    id: 'flower-yuzu',
+    spot: 'flower',
+    regular: 'yuzu',
+    kicker: '花店 · 放学后',
+    title: '三枝向日葵',
+    text: '小柚蹲在花店门口，盯着一桶向日葵看了好久。“同桌要转学了，我想送她一束花，可零花钱只够买三枝……店长，三枝会不会太少？”',
+    choices: [
+      {
+        label: '“三枝刚好，一枝代表一年。”',
+        reply: '小柚眼睛一亮，挑了三枝最精神的向日葵。花店店长偷偷多塞了一枝满天星，说这是“附赠的勇气”。小柚把找回的零钱硬塞给你：“这是谢谢店长的！”',
+        reward: { coins: 8, rapport: 'yuzu' },
+      },
+      {
+        label: '陪她一起写一张小卡片。',
+        reply: '你们在卡片上画了一杯粉粉的奶茶。小柚写到一半红了眼眶，又笑着说没事。花店店长看在眼里，送了你一罐茉莉茶：“谢谢你陪着小朋友。”',
+        reward: { supply: 'jasmine_tin', rapport: 'yuzu' },
+      },
+    ],
+  },
+  {
+    id: 'bakery-tsukimi',
+    spot: 'bakery',
+    regular: 'tsukimi',
+    kicker: '面包房 · 闭店前',
+    title: '给夜班留的面包',
+    text: '月见抱着几本书站在面包房门口。“图书馆今晚要通宵整理书架。”她轻声说，“想给值夜班的同事带点吃的，可不知道大家喜欢什么。”',
+    choices: [
+      {
+        label: '“挑软一点的，夜里不费力。”',
+        reply: '月见认真点头，挑了一袋牛奶小餐包。栗子听说是给图书馆的，又多放了两个。月见付账时多留了一些：“替我请店长明早喝杯热的。”',
+        reward: { coins: 12, rapport: 'tsukimi' },
+      },
+      {
+        label: '“再配一壶热茶过去吧。”',
+        reply: '“你总是记得温度。”月见笑了。栗子顺手往她袋子里塞了海盐奶油，月见又分了一罐给你：“书里说，好东西要和懂的人分。”',
+        reward: { supply: 'sea_cream', rapport: 'tsukimi' },
+      },
+    ],
+  },
+  {
+    id: 'airclub-usui',
+    spot: 'airclub',
+    regular: 'usui',
+    kicker: '航空俱乐部 · 风向袋下',
+    title: '纸飞机的手感参数',
+    text: '薄雾坐在跑道边，脚下散着一地纸飞机。“想在新游戏里做一段飞行关卡。”她举起一架，“可参数怎么调，都飞不出风的感觉。”',
+    choices: [
+      {
+        label: '一起到跑道上试飞。',
+        reply: '纸飞机乘着傍晚的风滑出去很远。薄雾一边追一边记，最后说：“原来风不是参数，是心情。”她把给测试员准备的黑糖珍珠分了你一袋。',
+        reward: { supply: 'pearl_pouch', rapport: 'usui' },
+      },
+      {
+        label: '“机翼宽一点，让它多停一会儿。”',
+        reply: '薄雾把机翼折得宽宽的，纸飞机在空中慢慢打转。她说这个手感可以直接写进游戏，还认真地付了你一笔“顾问费”。',
+        reward: { coins: 14, rapport: 'usui' },
+      },
+    ],
+  },
+  {
+    id: 'flower-alan',
+    spot: 'flower',
+    regular: 'alan',
+    kicker: '花店 · 傍晚的加急单',
+    title: '一束不能迟到的花',
+    text: '阿岚冲进花店，气喘吁吁：“有位老奶奶订了花，要在七点前送到老伴手里，今天是他们的结婚纪念日！”可她的配送箱里，只剩一个奶茶杯架。',
+    choices: [
+      {
+        label: '用杯架把花束稳稳固定住。',
+        reply: '花束绑在杯架上，稳得像一杯满杯奶茶。阿岚六点五十八分送到，回来时拎着一箱蜜桃：“老奶奶说这是谢礼，分你一半！”',
+        reward: { supply: 'peach_crate', rapport: 'alan' },
+      },
+      {
+        label: '帮她画一条最快的近路。',
+        reply: '你画了一条穿过小巷的近路。阿岚看一眼就记住了，骑车冲进夕阳。回来时她把小费分了你一半：“这条路，以后就叫店长线！”',
+        reward: { coins: 16, rapport: 'alan' },
+      },
+    ],
+  },
+  {
+    id: 'bakery-rin',
+    spot: 'bakery',
+    regular: 'rin',
+    kicker: '面包房 · 角落的位子',
+    title: '评论家的笔记本',
+    text: '凛独自坐在面包房角落，面前是一块没动过的蛋糕，和一本写满划痕的笔记本。“专栏写不下去了。”她合上本子，“店长，你觉得——好吃，到底是什么？”',
+    choices: [
+      {
+        label: '“是想再来一次的心情。”',
+        reply: '凛沉默了很久，在笔记本上写下这句话，划掉，最后又补了回来。起身时她把一个信封推给你：“采访费。别推辞。”',
+        reward: { coins: 18, rapport: 'rin' },
+      },
+      {
+        label: '“先尝一口蛋糕再说吧。”',
+        reply: '凛犹豫了一下，叉起一小块。“……海盐。”她嘴角很轻地动了一下，像是笑。临走前，她向栗子买了一罐海盐奶油，放在你手边。',
+        reward: { supply: 'sea_cream', rapport: 'rin' },
+      },
+    ],
+  },
 ];
 
-export function storiesForSpot(spot: CitySpotId): CityStoryDef[] {
-  return CITY_STORIES.filter((story) => story.spot === spot);
+/** Stories for a spot, minus regulars' stories whose guest the player hasn't met yet. */
+export function storiesForSpot(spot: CitySpotId, metCustomers: readonly string[]): CityStoryDef[] {
+  return CITY_STORIES.filter((story) => story.spot === spot && (!story.regular || metCustomers.includes(story.regular)));
 }
 
 export function cityStoryById(id: string): CityStoryDef | undefined {
@@ -334,11 +437,21 @@ export interface TravelQuizQuestion {
   options: TravelQuizOption[];
 }
 
+export type TravelTimingEngine = 'rhythm' | 'hold' | 'pendulum';
+
 export interface TravelTimingConfig {
+  /** rhythm: beats slide into a circle · hold: press, release inside the band · pendulum: bouncing pointer. */
+  engine: TravelTimingEngine;
+  /** Beats / rounds / taps. */
   taps: number;
+  /** Tempo multiplier: beat rate, fill rate or pointer sweep rate. */
   speed: number;
-  zone: number;
-  drift: boolean;
+  /** pendulum: half-width of the sweet zone (0..0.5). */
+  zone?: number;
+  /** pendulum: the pointer wobbles a little. */
+  drift?: boolean;
+  /** hold: word shown when the meter tops out. */
+  overLabel?: string;
   tapLabel: string;
   unit: string;
   hint: string;
@@ -397,13 +510,12 @@ export const TRAVEL_CHAPTERS: TravelChapterDef[] = [
     ],
     miniGame: 'timing',
     timing: {
+      engine: 'rhythm',
       taps: 3,
       speed: 0.92,
-      zone: 0.115,
-      drift: false,
       tapLabel: '接住！',
       unit: '杯',
-      hint: '浪花推到台阶时按下，接住三只汽水杯。',
+      hint: '浪花一拍一拍推上台阶，拍子滑进圆圈时按下，接住三只汽水杯。',
       scale: ['太早', '浪花正好', '太晚'],
       doneLine: '三只杯子稳稳当当，一滴都没洒。',
     },
@@ -436,14 +548,14 @@ export const TRAVEL_CHAPTERS: TravelChapterDef[] = [
     ],
     miniGame: 'timing',
     timing: {
+      engine: 'hold',
       taps: 3,
-      speed: 1.22,
-      zone: 0.095,
-      drift: false,
-      tapLabel: '采下！',
+      speed: 1,
+      overLabel: '太老',
+      tapLabel: '按住采茶',
       unit: '芽',
-      hint: '在一芽两叶最嫩的那一瞬按下，采满三篮。',
-      scale: ['太嫩', '刚好的一芽两叶', '太老'],
+      hint: '按住看新芽慢慢舒展，长到一芽两叶那一段时松手，采满三篮。',
+      scale: ['太嫩', '一芽两叶', '太老'],
       doneLine: '三篮新芽，带着露水和清晨的味道。',
     },
     recipeId: 'mist_matcha',
@@ -523,13 +635,14 @@ export const TRAVEL_CHAPTERS: TravelChapterDef[] = [
     ],
     miniGame: 'timing',
     timing: {
+      engine: 'pendulum',
       taps: 3,
       speed: 1.4,
       zone: 0.105,
       drift: true,
       tapLabel: '接星！',
       unit: '颗',
-      hint: '星光带着一点飘移，在落下时接住三颗。',
+      hint: '星光带着一点飘移，指针进入薄荷色区域时接住，共三颗。',
       scale: ['太早', '星光落下', '太晚'],
       doneLine: '瓶子里亮起三颗小星星，像三声轻轻的笑。',
     },

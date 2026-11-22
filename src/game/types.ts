@@ -51,6 +51,28 @@ export type Species = 'fox' | 'bear' | 'cat' | 'rabbit' | 'wolf' | 'dog';
 export type HairStyle = 'bob' | 'twintails' | 'long' | 'short' | 'fluffy' | 'ponytail';
 export type Accessory = 'star' | 'beret' | 'ribbon' | 'glasses' | 'scarf' | 'clip';
 
+export type TasteTag =
+  | 'fruity'
+  | 'pink'
+  | 'milky'
+  | 'tea'
+  | 'rich'
+  | 'matcha'
+  | 'floral'
+  | 'chewy'
+  | 'fresh'
+  | 'creamy';
+
+export interface CustomerTaste {
+  /** Drink ids this guest gravitates to, most loved first. */
+  favorites: string[];
+  tags: TasteTag[];
+  sugar: SugarType;
+  /** 'hot' only ever applies to tea; other categories fall back to 'less'. */
+  ice: IceType;
+  size: SizeType;
+}
+
 export interface CustomerDef {
   id: string;
   name: string;
@@ -79,10 +101,15 @@ export interface CustomerDef {
   };
   minDay: number;
   vip?: boolean;
-  chat?: CustomerChat;
+  taste: CustomerTaste;
+  /** Tiered small talk, unlocked by rapport (0 / 2 / 4 / 7). */
+  chats: CustomerChat[];
 }
 
 export interface CustomerChat {
+  /** Stable id persisted in `SaveData.chatsSeen`, e.g. `momo-1`. */
+  id: string;
+  minRapport: number;
   line: string;
   options: CustomerChatOption[];
 }
@@ -90,6 +117,8 @@ export interface CustomerChat {
 export interface CustomerChatOption {
   label: string;
   reply: string;
+  /** Exactly one option per chat is the one this guest loves. */
+  liked?: boolean;
 }
 
 export interface DrinkDef {
@@ -107,6 +136,7 @@ export interface DrinkDef {
   finish: FinishMode;
   recipe: Recipe;
   source?: DrinkSource;
+  tags: TasteTag[];
 }
 
 export interface DayTheme {
@@ -131,9 +161,45 @@ export interface DayConfig {
   patience: number;
   vipChance: number;
   rushChance: number;
+  /** Orders (dine-in + delivery) allowed in the shop at once. */
+  maxOrders: number;
   theme: DayTheme;
+  challenge: DailyChallenge;
   unlockedDrinkIds: string[];
   newDrinkIds: string[];
+}
+
+export type ChallengeKind = 'perfect' | 'combo' | 'delivery3' | 'noWalkout' | 'categories';
+
+export interface DailyChallenge {
+  kind: ChallengeKind;
+  target: number;
+  /** Full sentence for intro / summary, e.g. 「完美出杯 3 杯」. */
+  label: string;
+  /** Short HUD label, e.g. 「完美」. */
+  short: string;
+  reward: number;
+}
+
+export interface ChallengeProgress {
+  challenge: DailyChallenge;
+  value: number;
+  done: boolean;
+  /** noWalkout can be lost mid-day; other kinds only grow. */
+  failed: boolean;
+}
+
+export type DecorSlot = 'counter' | 'wainscot' | 'curtain' | 'bunting' | 'rug';
+
+export interface DecorSave {
+  owned: string[];
+  equipped: Record<DecorSlot, string>;
+}
+
+export interface LastOrder {
+  drinkId: string;
+  recipe: Recipe;
+  day: number;
 }
 
 export interface UpgradeDef {
@@ -169,8 +235,15 @@ export interface SaveData {
   bestDeliveryRating: number;
   tutorialSeen: boolean;
   sound: boolean;
+  /** Optional music-box loop; off unless the player turns it on. */
+  music: boolean;
   city: CitySave;
   travel: TravelSave;
+  /** Last perfectly served order per guest; drives 「老样子」 orders. */
+  lastOrders: Record<string, LastOrder>;
+  chatsSeen: string[];
+  decor: DecorSave;
+  challengesDone: number;
 }
 
 export interface PlayerState {
@@ -186,6 +259,12 @@ export interface PlayerState {
   orders: OrderState[];
   completedOrders: CompletedOrder[];
   supplies: SupplyId[];
+  /** Guests or riders who gave up waiting today. */
+  walkouts: number;
+  delivery3Today: number;
+  /** Categories served with at least 5/7 matching today. */
+  categoriesServed: ProductCategory[];
+  challengeDone: boolean;
 }
 
 export interface DeliveryInfo {
@@ -196,11 +275,21 @@ export interface DeliveryInfo {
   packaging: string[];
 }
 
+export type OrderKind = 'menu' | 'wish' | 'usual';
+
 export interface OrderState {
   id: string;
   customerId: string;
+  /**
+   * Menu / usual: the drink that must be made. Wish: one valid candidate,
+   * used as the comparison target if the player picks a drink that does not
+   * fit the wish.
+   */
   drinkId: string;
   request: Recipe;
+  kind: OrderKind;
+  /** Wish orders only: the two taste tags the guest asked for. */
+  wishTags?: TasteTag[];
   patienceMax: number;
   patience: number;
   accepted: boolean;
@@ -211,7 +300,6 @@ export interface OrderState {
   delivery?: DeliveryInfo;
   talked: boolean;
   tipBonus: number;
-  wish?: string;
   createdAt: number;
   status: 'waiting' | 'in-craft' | 'served' | 'left';
 }
@@ -240,6 +328,10 @@ export interface CraftSelections {
 
 export interface ServeResult {
   order: OrderState;
+  /** Drink the player actually chose in step 1. */
+  chosenDrinkId: string;
+  /** The 7-field target the cup was compared against. */
+  target: Recipe;
   matches: number;
   total: number;
   matched: Record<keyof Recipe, boolean>;
@@ -253,6 +345,15 @@ export interface ServeResult {
   deliveryRating: number;
   packagingScore: number;
   packagingTotal: number;
+  /** Wrong items packed into a delivery bag. */
+  packagingWrong: number;
+  /** Menu / usual: chose the ordered drink. Wish: chosen drink has both wish tags. */
+  drinkOk: boolean;
+  /** Wish only: chosen drink is one of the guest's favorites. */
+  favorite: boolean;
+  /** Wish only: whether each requested tag is present on the chosen drink. */
+  wishMatched: boolean[] | null;
+  rapportGain: number;
 }
 
 export type ScreenId =

@@ -4,7 +4,7 @@ import type { DayTheme } from '../game/types';
 import { paintCoverage, raycastPaint, type PaintCoverage } from './threeUtils';
 
 const art = import.meta.glob<string>('../art/teahouse/*.webp', { eager: true, query: '?url', import: 'default' });
-type Surface = 'counter-panel' | 'oak' | 'floor' | 'plaster';
+export type Surface = 'counter-panel' | 'oak' | 'floor' | 'plaster';
 type Prop = 'chair-front' | 'chair-turned' | 'table-rose' | 'table-daisy' | 'monstera' | 'blossoms' | 'posy' | 'register' | 'bench' | 'stool' | 'pendant' | 'pastries';
 type ArtKey = Surface | Prop | 'garden';
 
@@ -25,6 +25,7 @@ export class PaintedRoom {
   private readonly tableMasks = new Map<Prop, PaintCoverage>();
   private readonly tables: THREE.Object3D[] = [];
   private readonly geometries: THREE.BufferGeometry[] = [];
+  private readonly recolors = new Map<Surface, { tint: { value: THREE.Color }; amount: { value: number } }>();
   private disposed = false;
 
   constructor() {
@@ -54,11 +55,21 @@ export class PaintedRoom {
 
   private surface(key: Surface, base: string, wash: number) {
     const material = new THREE.MeshStandardMaterial({ color: base, roughness: .96 });
+    const recolor = { tint: { value: new THREE.Color(base) }, amount: { value: 0 } };
+    this.recolors.set(key, recolor);
     material.onBeforeCompile = shader => {
       shader.uniforms.paperBase = { value: new THREE.Color(base) };
       shader.uniforms.paperWash = { value: wash };
-      shader.fragmentShader = 'uniform vec3 paperBase;\nuniform float paperWash;\n' + shader.fragmentShader.replace(
-        '#include <map_fragment>', '#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, paperBase, paperWash);',
+      shader.uniforms.paperTint = recolor.tint;
+      shader.uniforms.paperTintAmount = recolor.amount;
+      // Recolouring moves only the low-saturation ground (keeps relative lightness); saturated motifs stay painted.
+      shader.fragmentShader = 'uniform vec3 paperBase;\nuniform float paperWash;\nuniform vec3 paperTint;\nuniform float paperTintAmount;\n' + shader.fragmentShader.replace(
+        '#include <map_fragment>', `#include <map_fragment>
+ diffuseColor.rgb = mix(diffuseColor.rgb, paperBase, paperWash);
+ float paperHi = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));
+ float paperSat = (paperHi - min(diffuseColor.r, min(diffuseColor.g, diffuseColor.b))) / max(paperHi, 1e-3);
+ float paperLum = dot(diffuseColor.rgb, vec3(.2126, .7152, .0722)) / max(dot(paperBase, vec3(.2126, .7152, .0722)), 1e-3);
+ diffuseColor.rgb = mix(diffuseColor.rgb, paperTint * paperLum, paperTintAmount * (1. - smoothstep(.4, .56, paperSat)));`,
       );
     };
     this.whenReady(key, texture => {
@@ -108,6 +119,13 @@ export class PaintedRoom {
 
   loadGarden(draw: (image: HTMLImageElement) => void) {
     this.whenReady('garden', texture => draw(texture.image));
+  }
+
+  /** Repaint a surface's ground toward `color` while keeping its painted motifs; null restores the artwork. */
+  recolor(key: Surface, color: THREE.Color | null) {
+    const entry = this.recolors.get(key)!;
+    entry.amount.value = color ? 1 : 0;
+    if (color) entry.tint.value.copy(color);
   }
 
   setTheme(theme: DayTheme) {

@@ -3,8 +3,9 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import type { CustomerDef, DayTheme, DrinkDef, UpgradeId } from '../game/types';
+import type { CustomerDef, DayTheme, DecorSlot, DrinkDef, UpgradeId } from '../game/types';
 import { CUSTOMERS, DRINKS_MAP, DRINKS } from '../game/data';
+import { DECOR_DEFAULTS, DECOR_MAP, type DecorDef } from '../game/decor';
 import { GuestSheets, StorybookGuest } from './StorybookGuest';
 import { PaintedRoom, drawGarden, paperFinish } from './PaintedRoom';
 import {
@@ -70,6 +71,8 @@ export interface SceneOptions {
   onCustomerClick?: (orderId: string) => void;
   onCustomerArrive?: (orderId: string) => void;
   onCustomerGone?: (orderId: string) => void;
+  /** The menu board on the back wall was clicked while the scene is interactive. */
+  onMenuClick?: () => void;
 }
 
 const SEATS = [
@@ -144,7 +147,17 @@ export class CafeScene {
   private contactShadowTex = contactShadowTexture();
   private cushionMeshes: THREE.Mesh[] = [];
   private cakeMeshes: THREE.Object3D[] = [];
+  private cakeStand = new THREE.Group();
   private trophyGroup = new THREE.Group();
+  private menuTargets: THREE.Object3D[] = [];
+  // Decor slot paint: counter [body, drawers, beading], wainscot [panel, flutes].
+  private counterMats: THREE.MeshStandardMaterial[] = [];
+  private wainscotMats: THREE.MeshStandardMaterial[] = [];
+  private curtainMats: THREE.MeshStandardMaterial[] = [];
+  private curtainTieMats: THREE.MeshStandardMaterial[] = [];
+  private flags: { material: THREE.MeshStandardMaterial; index: number }[] = [];
+  private rugTexture!: THREE.CanvasTexture;
+  private rugId = DECOR_DEFAULTS.rug;
   private upgradeLevels: Record<UpgradeId, number> = { seat: 0, sign: 0, display: 0, training: 0 };
   private unlockedDrinks: DrinkDef[] = [];
   private day = 1;
@@ -216,14 +229,47 @@ export class CafeScene {
     this.applyUpgradeVisuals();
   }
 
+  /** Repaint the five decor slots from DECOR_MAP palettes; unknown ids fall back to the slot default. */
+  setDecor(equipped: Record<DecorSlot, string>) {
+    const def = (slot: DecorSlot) => DECOR_MAP[equipped[slot]] ?? DECOR_MAP[DECOR_DEFAULTS[slot]];
+    const counter = def('counter').colors;
+    this.counterMats.forEach((material, i) => material.color.set(counter[i] ?? counter[0]));
+    // The painted counter panels keep their peach motif; only the sage ground follows the paint.
+    this.paint.recolor(
+      'counter-panel',
+      def('counter').id === DECOR_DEFAULTS.counter ? null : new THREE.Color(counter[0]).lerp(new THREE.Color(counter[1] ?? counter[0]), .5),
+    );
+    const wainscot = def('wainscot').colors;
+    this.wainscotMats.forEach((material, i) => material.color.set(wainscot[i] ?? wainscot[0]));
+    const curtain = def('curtain').colors;
+    for (const material of this.curtainMats) material.color.set(curtain[0]);
+    for (const material of this.curtainTieMats) material.color.set(curtain[1] ?? curtain[0]);
+    const flags = def('bunting').colors;
+    for (const flag of this.flags) flag.material.color.set(flags[flag.index % flags.length]);
+    const rug = def('rug');
+    if (rug.id !== this.rugId) {
+      this.rugId = rug.id;
+      this.drawRug(this.rugTexture.image.getContext('2d') as CanvasRenderingContext2D, this.rugTexture.image.width, this.rugTexture.image.height, rug);
+      this.rugTexture.needsUpdate = true;
+    }
+  }
+
   setCameraMode(mode: 'title' | 'play' | 'summary') {
     this.cameraMode = mode;
-    if (mode === 'title') {
+    this.applyFraming();
+  }
+
+  private applyFraming() {
+    if (this.cameraMode === 'title') {
       this.cameraBase.set(1.2, 4.7, 10.8);
       this.lookBase.set(0.2, 1.65, -0.9);
-    } else if (mode === 'summary') {
+    } else if (this.cameraMode === 'summary') {
       this.cameraBase.set(-0.5, 4.7, 10.5);
       this.lookBase.set(-0.1, 1.6, -0.9);
+    } else if (this.camera.aspect >= 1) {
+      // Landscape: tilt up a little so the brand sign clears the HUD row; resize() widens the lens for the door.
+      this.cameraBase.set(0, 3.55, 8.3);
+      this.lookBase.set(.12, 1.78, .25);
     } else {
       this.cameraBase.set(0, 3.60, 8.25);
       this.lookBase.set(0, 1.66, .25);
@@ -475,10 +521,13 @@ export class CafeScene {
     const h = window.innerHeight;
     const aspect = w / h;
     this.camera.aspect = aspect;
+    // Landscape keeps a fixed horizontal reach so the entrance door stays in frame on 16:10 as on 16:9.
     // Portrait viewports need a wider vertical FOV so all three seats stay in frame.
+    const reach = THREE.MathUtils.radToDeg(2 * Math.atan(.75 / aspect));
     const wide = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(18)) / Math.max(0.42, aspect)));
-    this.camera.fov = aspect >= 1 ? 44 : THREE.MathUtils.clamp(wide, 44, 72);
+    this.camera.fov = aspect >= 1 ? THREE.MathUtils.clamp(reach, 47, 52) : THREE.MathUtils.clamp(wide, 44, 72);
     this.camera.updateProjectionMatrix();
+    this.applyFraming();
     this.renderer.setSize(w, h, false);
     this.composer.setSize(w, h);
     this.finish.uniforms.pixel.value.set(.98 / w, .98 / h);
@@ -501,6 +550,13 @@ export class CafeScene {
     return null;
   }
 
+  private menuAt(clientX: number, clientY: number): boolean {
+    if (!this.options.onMenuClick) return false;
+    this.rayPointer.set((clientX / window.innerWidth) * 2 - 1, -(clientY / window.innerHeight) * 2 + 1);
+    this.raycaster.setFromCamera(this.rayPointer, this.camera);
+    return this.raycaster.intersectObjects(this.menuTargets, false).length > 0;
+  }
+
   private onPointerMove = (event: PointerEvent) => {
     this.pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
     this.pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -508,7 +564,8 @@ export class CafeScene {
     if (!this.interactive) return;
     const id = this.customerAt(event.clientX, event.clientY);
     this.setHovered(id);
-    this.renderer.domElement.style.cursor = id ? 'pointer' : 'default';
+    const pointing = !!id || this.menuAt(event.clientX, event.clientY);
+    this.renderer.domElement.style.cursor = pointing ? 'pointer' : 'default';
   };
 
   private onPointerLeave = () => {
@@ -520,6 +577,7 @@ export class CafeScene {
     if (!this.interactive) return;
     const id = this.customerAt(event.clientX, event.clientY);
     if (id) this.options.onCustomerClick?.(id);
+    else if (this.menuAt(event.clientX, event.clientY)) this.options.onMenuClick?.();
   };
 
   private setHovered(id: string | null) {
@@ -931,34 +989,70 @@ export class CafeScene {
   }
 
   private buildFloor() {
-    const floorGeometry = new THREE.PlaneGeometry(22, 18);
+    // Walls run to ±12 so the wider landscape lens never sees past the room's edge.
+    const floorGeometry = new THREE.PlaneGeometry(24, 18);
     const uv = floorGeometry.attributes.uv;
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 4.5, uv.getY(i) * 3.7);
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 4.9, uv.getY(i) * 3.7);
     const floor = new THREE.Mesh(floorGeometry, this.paint.surfaces.floor);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(0, 0, -1);
     floor.receiveShadow = true;
     this.scene.add(floor);
 
-    const runner = makeCanvasTexture(768, 256, (ctx, w, h) => {
-      const rand = mulberry(42311);
-      ctx.fillStyle = '#cbb397';
-      ctx.beginPath(); ctx.roundRect(6, 6, w - 12, h - 12, 28); ctx.fill();
-      ctx.strokeStyle = '#a78b77'; ctx.lineWidth = 4; ctx.stroke();
-      ctx.strokeStyle = '#eee0c8'; ctx.lineWidth = 3; ctx.setLineDash([5, 5]);
-      ctx.strokeRect(21, 21, w - 42, h - 42);
-      ctx.setLineDash([]);
-      for (let i = 0; i < 3600; i++) {
-        ctx.fillStyle = i % 2 ? 'rgba(255,246,222,.16)' : 'rgba(101,76,58,.09)';
-        ctx.fillRect(25 + rand() * (w - 50), 25 + rand() * (h - 50), 2 + rand() * 8, .9);
-      }
-    });
+    this.rugTexture = makeCanvasTexture(768, 256, (ctx, w, h) => this.drawRug(ctx, w, h, DECOR_MAP[DECOR_DEFAULTS.rug]));
     const rug = new THREE.Mesh(new THREE.PlaneGeometry(6.65, 1.65),
-      new THREE.MeshStandardMaterial({ map: runner, transparent: true, roughness: 1, depthWrite: false }));
+      new THREE.MeshStandardMaterial({ map: this.rugTexture, transparent: true, roughness: 1, depthWrite: false }));
     rug.rotation.x = -Math.PI / 2;
     rug.position.set(0, .009, -3.87);
     rug.receiveShadow = true;
     this.scene.add(rug);
+  }
+
+  /** Runner rug: base colour, a darker hem, a dashed inner border and a per-style motif in the pattern colour. */
+  private drawRug(ctx: CanvasRenderingContext2D, w: number, h: number, def: DecorDef) {
+    const [base, pattern] = def.colors;
+    const rand = mulberry(42311);
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    ctx.fillStyle = base;
+    ctx.beginPath(); ctx.roundRect(6, 6, w - 12, h - 12, 28); ctx.fill();
+    ctx.clip();
+    ctx.fillStyle = pattern;
+    if (def.id === 'rug-mint') {
+      // gingham: soft crossing bands
+      ctx.globalAlpha = .38;
+      for (let x = 44; x < w - 30; x += 64) ctx.fillRect(x, 0, 24, h);
+      for (let y = 44; y < h - 30; y += 64) ctx.fillRect(0, y, w, 24);
+      ctx.globalAlpha = 1;
+    } else if (def.id === 'rug-rose') {
+      // a ring of little five-petal roses inside the border
+      for (let x = 58; x < w - 40; x += 54) {
+        for (const y of [44, h - 44]) {
+          for (let p = 0; p < 5; p++) {
+            const a = (p / 5) * Math.PI * 2;
+            ctx.beginPath(); ctx.arc(x + Math.cos(a) * 7, y + Math.sin(a) * 7, 6.5, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      }
+    } else if (def.id === 'rug-plum') {
+      // a row of plush diamonds down the middle
+      for (let x = 92; x < w - 70; x += 84) {
+        ctx.beginPath();
+        ctx.moveTo(x, h / 2 - 34); ctx.lineTo(x + 30, h / 2); ctx.lineTo(x, h / 2 + 34); ctx.lineTo(x - 30, h / 2);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    ctx.restore();
+    ctx.strokeStyle = new THREE.Color(base).lerp(new THREE.Color('#5d4038'), .32).getStyle();
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.roundRect(6, 6, w - 12, h - 12, 28); ctx.stroke();
+    ctx.strokeStyle = pattern; ctx.lineWidth = 3; ctx.setLineDash([5, 5]);
+    ctx.strokeRect(21, 21, w - 42, h - 42);
+    ctx.setLineDash([]);
+    for (let i = 0; i < 3600; i++) {
+      ctx.fillStyle = i % 2 ? 'rgba(255,246,222,.16)' : 'rgba(101,76,58,.09)';
+      ctx.fillRect(25 + rand() * (w - 50), 25 + rand() * (h - 50), 2 + rand() * 8, .9);
+    }
   }
 
   private buildWalls() {
@@ -966,8 +1060,8 @@ export class CafeScene {
     // segmented wall so the two arched windows are real openings onto the sky
     const sections: [number, number, number, number][] = [
       // [centerX, centerY, width, height]
-      [-7.7875, 3.1, 4.425, 6.2],
-      [7.7875, 3.1, 4.425, 6.2],
+      [-8.7875, 3.1, 6.425, 6.2],
+      [8.7875, 3.1, 6.425, 6.2],
       [0, 3.1, 5.05, 6.2],
       [-4.05, 5.375, 3.05, 1.65],
       [4.05, 5.375, 3.05, 1.65],
@@ -1008,30 +1102,34 @@ export class CafeScene {
     this.scene.add(ceiling);
     const timber = standard('#dac4a8', { roughness: .96 });
     for (const z of [-4.9, -.75, 3.4, 7.55]) {
-      const beam = new THREE.Mesh(new THREE.BoxGeometry(22, .12, .16), timber);
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(24, .12, .16), timber);
       beam.position.set(0, 6.03, z);
       this.scene.add(beam);
     }
 
     // wainscot
-    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#abc0a9', { roughness: .96 }));
+    const wainscotMat = standard('#abc0a9', { roughness: .96 });
+    const fluteMat = standard('#c2c9af', { roughness: .95 });
+    this.wainscotMats = [wainscotMat, fluteMat];
+    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(24, 1.1, 0.16), wainscotMat);
     wainscot.position.set(0, 0.55, -5.22);
     wainscot.receiveShadow = true;
     this.scene.add(wainscot);
-    const trim = new THREE.Mesh(new RoundedBoxGeometry(20, 0.09, 0.22, 3, 0.04), standard('#fff8f0', { roughness: 0.8 }));
+    const trim = new THREE.Mesh(new RoundedBoxGeometry(24, 0.09, 0.22, 3, 0.04), standard('#fff8f0', { roughness: 0.8 }));
     trim.position.set(0, 1.12, -5.16);
     trim.castShadow = true;
     this.scene.add(trim);
 
     // vertical fluted panel lines
-    for (let i = -8; i <= 8; i += 2) {
-      const line = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.02, 0.02), standard('#c2c9af', { roughness: .95 }));
+    const fluteGeo = new THREE.BoxGeometry(0.025, 1.02, 0.02);
+    for (let i = -10; i <= 10; i += 2) {
+      const line = new THREE.Mesh(fluteGeo, fluteMat);
       line.position.set(i, 0.55, -5.13);
       this.scene.add(line);
     }
 
     // ceiling trims / faux crown
-    const crown = new THREE.Mesh(new RoundedBoxGeometry(20, 0.16, 0.34, 3, 0.06), standard('#fff7ee', { roughness: 0.85 }));
+    const crown = new THREE.Mesh(new RoundedBoxGeometry(24, 0.16, 0.34, 3, 0.06), standard('#fff7ee', { roughness: 0.85 }));
     crown.position.set(0, 5.95, -5.3);
     this.scene.add(crown);
 
@@ -1170,6 +1268,9 @@ export class CafeScene {
 
     // curtains
     const curtainMat = standard('#e7f9f2', { roughness: 0.95 });
+    const tieMat = standard('#ffb8cb', { roughness: 0.65 });
+    this.curtainMats.push(curtainMat);
+    this.curtainTieMats.push(tieMat);
     for (const s of [-1, 1] as const) {
       const curtain = new THREE.Group();
       for (let i = 0; i < 5; i++) {
@@ -1184,7 +1285,7 @@ export class CafeScene {
         if (o instanceof THREE.Mesh) o.castShadow = true;
       });
       this.scene.add(curtain);
-      const tie = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.035, 8, 24), standard('#ffb8cb', { roughness: 0.65 }));
+      const tie = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.035, 8, 24), tieMat);
       tie.rotation.y = Math.PI / 2;
       tie.rotation.z = Math.PI / 2;
       tie.position.set(x + s * (w / 2 - 0.21), y - 0.5, -4.82);
@@ -1513,6 +1614,7 @@ export class CafeScene {
     );
     paper.position.set(0, 3.42, -5.075);
     this.scene.add(paper);
+    this.menuTargets = [board, paper];
     for (const [dx, dy] of [
       [-1.3, 0.78],
       [1.3, 0.78],
@@ -1798,6 +1900,7 @@ export class CafeScene {
 
     const recessed = standard('#b6c2a8', { roughness: .97 });
     const trim = standard('#c7c8a6', { roughness: .94 });
+    this.counterMats = [joinery, recessed, trim];
     const knob = standard('#ab855d', { roughness: .76, metalness: .08 });
     const panelWidth = 1.23;
     for (let i = 0; i < 7; i++) {
@@ -1872,14 +1975,45 @@ export class CafeScene {
     ribbonBow.position.set(0, 0.57, 0.04);
     ribbonBow.rotation.x = Math.PI / 2;
     display.add(base, rim, dome, domeRim, domeKnob, ribbonBow);
+    // Display level L shows 4 + 2L cakes: four in front, three on a riser behind them,
+    // then a little two-tier stand beside the cloche for the last three.
     const cakeColors = ['#ffd8e0', '#c9e9d5', '#f7e3a4', '#d7c1e7', '#ffe8c7'];
-    for (let i = 0; i < 4; i++) {
-      const cake = this.makeCake(cakeColors[i]);
-      cake.position.set(-0.32 + i * 0.21, 0.19, 0.05);
-      cake.scale.setScalar(0.7);
+    const riser = new THREE.Mesh(new RoundedBoxGeometry(0.6, 0.05, 0.16, 2, 0.02), standard('#fff1e4', { roughness: 0.55 }));
+    riser.position.set(0, 0.215, -0.19);
+    display.add(riser);
+    const inDome: [number, number, number, number][] = [
+      // [x, y, z, scale]
+      [-0.32, 0.19, 0.05, 0.7], [-0.11, 0.19, 0.05, 0.7], [0.1, 0.19, 0.05, 0.7], [0.31, 0.19, 0.05, 0.7],
+      [-0.22, 0.24, -0.19, 0.56], [0.22, 0.24, -0.19, 0.56], [0, 0.24, -0.19, 0.56],
+    ];
+    inDome.forEach(([x, y, z, scale], i) => {
+      const cake = this.makeCake(cakeColors[i % cakeColors.length]);
+      cake.position.set(x, y, z);
+      cake.scale.setScalar(scale);
       display.add(cake);
       this.cakeMeshes.push(cake);
+    });
+    const gilt = standard('#f0c889', { roughness: 0.28, metalness: 0.3 });
+    const china = standard('#fff5ea', { roughness: 0.4 });
+    const lowPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.23, 0.03, 28), china);
+    lowPlate.position.y = 0.015;
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.3, 10), gilt);
+    stem.position.y = 0.18;
+    const highPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.13, 0.025, 24), china);
+    highPlate.position.y = 0.33;
+    this.cakeStand.add(lowPlate, stem, highPlate);
+    for (const [x, y, scale] of [[0, 0.343, 0.45], [-0.12, 0.03, 0.5], [0.12, 0.03, 0.5]] as const) {
+      const cake = this.makeCake(cakeColors[(this.cakeMeshes.length + 1) % cakeColors.length]);
+      cake.position.set(x, y, 0);
+      cake.scale.setScalar(scale);
+      this.cakeStand.add(cake);
+      this.cakeMeshes.push(cake);
     }
+    this.cakeStand.position.set(-0.86, 0, -0.02);
+    this.cakeStand.traverse((o) => {
+      if (o instanceof THREE.Mesh) o.castShadow = true;
+    });
+    display.add(this.cakeStand);
     display.position.set(-3.25, 1.118, 0.79);
     this.scene.add(display);
 
@@ -2259,7 +2393,7 @@ export class CafeScene {
   }
 
   private buildBunting() {
-    const flagColors = ['#ff8fb2', '#7fd9bb', '#ffd06e', '#b49ce4', '#84c8e8'];
+    const flagColors = DECOR_MAP[DECOR_DEFAULTS.bunting].colors;
     const flagShape = new THREE.Shape();
     flagShape.moveTo(-0.16, 0);
     flagShape.lineTo(0.16, 0);
@@ -2279,7 +2413,10 @@ export class CafeScene {
       for (let i = 0; i < 11; i++) {
         const t = 0.08 + (i / 10) * 0.84;
         const p = curve.getPoint(t);
-        const flag = new THREE.Mesh(flagGeo, standard(flagColors[(i + (side > 0 ? 2 : 0)) % flagColors.length], { roughness: 0.8, side: THREE.DoubleSide }));
+        const index = i + (side > 0 ? 2 : 0);
+        const material = standard(flagColors[index % flagColors.length], { roughness: 0.8, side: THREE.DoubleSide });
+        this.flags.push({ material, index });
+        const flag = new THREE.Mesh(flagGeo, material);
         flag.position.copy(p);
         flag.rotation.z = Math.sin(t * Math.PI) * side * 0.04;
         flag.castShadow = false;
@@ -2634,13 +2771,12 @@ export class CafeScene {
       mesh.position.y = 0.73 + seatLvl * 0.012;
       (mesh.material as THREE.MeshStandardMaterial).color.set(i === 1 ? '#ffd2e0' : '#d6f4e7');
     });
+    const cakes = 4 + this.upgradeLevels.display * 2;
     this.cakeMeshes.forEach((cake, i) => {
-      cake.visible = i < 4 + this.upgradeLevels.display * 2;
-      if (i >= 4) {
-        cake.position.set(-0.32 + (i - 4) * 0.21, 0.19, -0.22);
-        cake.scale.setScalar(0.58);
-      }
+      cake.visible = i < cakes;
     });
+    // The stand holds cakes 8–10; it only appears once there is something to put on it.
+    this.cakeStand.visible = cakes > 7;
     this.trophyGroup.visible = this.upgradeLevels.training > 0;
     this.trophyGroup.scale.setScalar(1 + this.upgradeLevels.training * 0.08);
   }
