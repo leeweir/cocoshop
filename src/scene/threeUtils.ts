@@ -112,7 +112,7 @@ export function makeCanvasTexture(
 
 export interface PaintCoverage { width: number; height: number; pixels: Uint8ClampedArray; }
 
-export function paintCoverage(image: HTMLImageElement, width: number, height: number): PaintCoverage {
+export function paintCoverage(image: HTMLImageElement | HTMLCanvasElement, width: number, height: number): PaintCoverage {
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d')!;

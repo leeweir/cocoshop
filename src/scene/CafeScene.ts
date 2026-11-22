@@ -608,7 +608,7 @@ export class CafeScene {
     for (const [id, c] of [...this.customers]) {
       const figure = c.figure;
       if (c.state === 'walking') {
-        if (this.stepPath(c, dt, 2.2)) {
+        if (figure.ready && this.stepPath(c, dt, 2.2)) {
           c.state = 'waiting';
           figure.root.rotation.y = SEATS[c.seat].angle;
           figure.setWalking(false);

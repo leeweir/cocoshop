@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { guestArtUrl } from '../art/guestArt';
+import arrivalsUrl from '../art/guest-arrivals.webp?inline';
 import type { CustomerDef } from '../game/types';
 import { makeCanvasTexture, paintCoverage, raycastPaint, type PaintCoverage } from './threeUtils';
 
@@ -8,6 +9,8 @@ const COLUMNS = 4;
 const ROWS = 2;
 const CELL_ASPECT = 432 / 608;
 const SOLE_MARGIN = 8 / 608;
+// Each row in the embedded strip holds this guest's seated and walking silhouettes.
+const ARRIVALS = ['momo', 'kuri', 'yuzu', 'tsukimi', 'usui', 'alan', 'rin'];
 const MASK_WIDTH = COLUMNS * 80;
 const MASK_HEIGHT = ROWS * 112;
 const sittingHeight: Record<string, number> = {
@@ -15,7 +18,8 @@ const sittingHeight: Record<string, number> = {
 };
 
 interface Sheet {
-  texture: THREE.Texture;
+  texture?: THREE.Texture;
+  retryTimer?: number;
   coverage?: PaintCoverage;
   feet?: number[];
   retry?: () => void;
@@ -39,9 +43,14 @@ function shoeCenters(mask: PaintCoverage) {
 }
 
 export class GuestSheets {
-  private sheets = new Map<string, Sheet>();
+  private readonly sheets = new Map<string, Sheet>();
+  private readonly arrivals = new Image();
 
   constructor() {
+    this.arrivals.onload = () => {
+      for (const [id, sheet] of this.sheets) this.useArrival(id, sheet);
+    };
+    this.arrivals.src = arrivalsUrl;
     window.addEventListener('online', this.retryFailed);
   }
 
@@ -49,48 +58,76 @@ export class GuestSheets {
     for (const sheet of this.sheets.values()) sheet.retry?.();
   };
 
+  private install(sheet: Sheet, image: HTMLImageElement | HTMLCanvasElement) {
+    const coverage = paintCoverage(image, MASK_WIDTH, MASK_HEIGHT);
+    const texture = new THREE.Texture(image);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 2;
+    texture.needsUpdate = true;
+    // Allocate a new GPU texture when switching to a different resolution.
+    sheet.texture?.dispose();
+    sheet.texture = texture;
+    sheet.coverage = coverage;
+    sheet.feet = shoeCenters(coverage);
+  }
+
+  private useArrival(id: string, sheet: Sheet) {
+    if (sheet.texture || !this.arrivals.naturalWidth) return;
+    const guest = ARRIVALS.indexOf(id);
+    if (guest < 0) return;
+    const w = this.arrivals.naturalWidth / 2, h = this.arrivals.naturalHeight / ARRIVALS.length;
+    const canvas = document.createElement('canvas');
+    canvas.width = w * COLUMNS;
+    canvas.height = h * ROWS;
+    const ctx = canvas.getContext('2d')!;
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLUMNS; col++) {
+        ctx.drawImage(this.arrivals, row * w, guest * h, w, h, col * w, row * h, w, h);
+      }
+    }
+    this.install(sheet, canvas);
+  }
+
   get(id: string): Sheet {
     const cached = this.sheets.get(id);
     if (cached) {
       cached.retry?.();
       return cached;
     }
-    const bitmap = new Image();
-    const texture = new THREE.Texture();
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.anisotropy = 2;
-    const sheet: Sheet = { texture };
+    const sheet: Sheet = {};
     this.sheets.set(id, sheet);
+    this.useArrival(id, sheet);
+    const bitmap = new Image();
     const url = guestArtUrl(id, 'poses');
-    let retried = false;
+    const delays = [350, 2800, 9000];
+    let attempts = 0;
+    const request = () => {
+      window.clearTimeout(sheet.retryTimer);
+      sheet.retry = undefined;
+      bitmap.src = attempts === 0 ? url : url + '?retry=' + attempts;
+      attempts++;
+    };
     bitmap.onload = () => {
-      if (this.sheets.get(id) !== sheet) return;
-      texture.image = bitmap;
-      texture.needsUpdate = true;
-      sheet.coverage = paintCoverage(bitmap, MASK_WIDTH, MASK_HEIGHT);
-      sheet.feet = shoeCenters(sheet.coverage);
+      if (this.sheets.get(id) === sheet) this.install(sheet, bitmap);
     };
     bitmap.onerror = () => {
       if (this.sheets.get(id) !== sheet) return;
-      if (retried) {
-        // Existing guests keep this same texture when a later visit or reconnect retries it.
-        sheet.retry = () => {
-          sheet.retry = undefined;
-          retried = false;
-          bitmap.src = url;
-        };
-      } else {
-        retried = true;
-        bitmap.src = url + '?retry=1';
+      sheet.retry = request;
+      if (navigator.onLine && attempts <= delays.length) {
+        sheet.retryTimer = window.setTimeout(request, delays[attempts - 1]);
       }
     };
-    bitmap.src = url;
+    request();
     return sheet;
   }
 
   dispose() {
+    this.arrivals.onload = null;
     window.removeEventListener('online', this.retryFailed);
-    for (const sheet of this.sheets.values()) sheet.texture.dispose();
+    for (const sheet of this.sheets.values()) {
+      window.clearTimeout(sheet.retryTimer);
+      sheet.texture?.dispose();
+    }
     this.sheets.clear();
   }
 }
@@ -120,7 +157,7 @@ export class StorybookGuest {
   constructor(customer: CustomerDef, private sheet: Sheet, vip: boolean) {
     this.seatedHeight = sittingHeight[customer.id] ?? 1.84;
     this.figure = new THREE.Mesh(this.paper, new THREE.MeshBasicMaterial({
-      map: sheet.texture, transparent: true, alphaTest: .075, depthWrite: true, toneMapped: false, vertexColors: true,
+      map: sheet.texture ?? null, transparent: true, alphaTest: .075, depthWrite: true, toneMapped: false, vertexColors: true,
     }));
     this.figure.visible = false;
     // A light watercolor wash from the window. The floor contact is drawn under the shoe soles.
@@ -165,6 +202,8 @@ export class StorybookGuest {
     if (this.facing !== facing) this.frame = -1;
     this.facing = facing;
   }
+  get ready() { return !!this.sheet.texture; }
+
   setHovered(value: boolean) { this.hovered = value; }
   setWalking(value: boolean) { this.walking = value; }
   setMood(mood: Mood) { this.mood = mood; }
@@ -222,7 +261,12 @@ export class StorybookGuest {
     if (this.walking) this.stride += dt * 7.2;
     const expression = this.mood === 'happy' ? 1 : this.mood !== 'neutral' ? 2 : this.blinkLeft > 0 ? 3 : 0;
     this.showFrame(this.walking ? 4 + Math.floor(this.stride) % 4 : expression);
-    this.figure.visible = !!this.sheet.texture.image;
+    const texture = this.sheet.texture;
+    if (texture && this.figure.material.map !== texture) {
+      this.figure.material.map = texture;
+      this.figure.material.needsUpdate = true;
+    }
+    this.figure.visible = this.ready;
     const height = this.seated ? this.seatedHeight : this.seatedHeight * 1.18;
     const settle = this.seated ? .065 * Math.exp(-9 * this.poseTime) * Math.cos(14 * this.poseTime) : 0;
     const step = this.walking ? Math.sin(Math.PI * this.stride * .5) ** 2 * .016 : 0;
