@@ -19,6 +19,8 @@ const sittingHeight: Record<string, number> = {
 
 interface Sheet {
   texture?: THREE.Texture;
+  /** Keep the off-DOM image alive until its decode callback installs the full texture. */
+  pendingImage?: HTMLImageElement;
   retryTimer?: number;
   coverage?: PaintCoverage;
   feet?: number[];
@@ -94,10 +96,10 @@ export class GuestSheets {
       cached.retry?.();
       return cached;
     }
-    const sheet: Sheet = {};
+    const bitmap = new Image();
+    const sheet: Sheet = { pendingImage: bitmap };
     this.sheets.set(id, sheet);
     this.useArrival(id, sheet);
-    const bitmap = new Image();
     const url = guestArtUrl(id, 'poses');
     const delays = [350, 2800, 9000];
     let attempts = 0;
@@ -108,7 +110,10 @@ export class GuestSheets {
       attempts++;
     };
     bitmap.onload = () => {
-      if (this.sheets.get(id) === sheet) this.install(sheet, bitmap);
+      if (this.sheets.get(id) !== sheet) return;
+      this.install(sheet, bitmap);
+      sheet.pendingImage = undefined;
+      bitmap.onload = bitmap.onerror = null;
     };
     bitmap.onerror = () => {
       if (this.sheets.get(id) !== sheet) return;
@@ -126,6 +131,7 @@ export class GuestSheets {
     window.removeEventListener('online', this.retryFailed);
     for (const sheet of this.sheets.values()) {
       window.clearTimeout(sheet.retryTimer);
+      if (sheet.pendingImage) sheet.pendingImage.onload = sheet.pendingImage.onerror = null;
       sheet.texture?.dispose();
     }
     this.sheets.clear();
