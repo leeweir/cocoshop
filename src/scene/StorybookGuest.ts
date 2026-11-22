@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { guestArtUrl } from '../art/guestArt';
 import type { CustomerDef } from '../game/types';
-import { makeCanvasTexture } from './threeUtils';
+import { makeCanvasTexture, paintCoverage, raycastPaint, type PaintCoverage } from './threeUtils';
 
 type Mood = 'neutral' | 'worried' | 'sad' | 'happy';
 const COLUMNS = 4;
 const ROWS = 2;
 const CELL_ASPECT = 432 / 608;
+const SOLE_MARGIN = 8 / 608;
 const MASK_WIDTH = COLUMNS * 80;
 const MASK_HEIGHT = ROWS * 112;
 const sittingHeight: Record<string, number> = {
@@ -15,8 +16,26 @@ const sittingHeight: Record<string, number> = {
 
 interface Sheet {
   texture: THREE.Texture;
-  coverage?: Uint8ClampedArray;
+  coverage?: PaintCoverage;
+  feet?: number[];
   retry?: () => void;
+}
+
+/** The shoes do not generally sit under the center of the drawing, especially mid-stride. */
+function shoeCenters(mask: PaintCoverage) {
+  const width = mask.width / COLUMNS, height = mask.height / ROWS;
+  return Array.from({ length: COLUMNS * ROWS }, (_, cell) => {
+    const left = cell % COLUMNS * width, top = Math.floor(cell / COLUMNS) * height;
+    let sum = 0, weight = 0;
+    for (let y = Math.floor(height * .91); y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const alpha = mask.pixels[((top + y) * mask.width + left + x) * 4 + 3];
+        sum += alpha * (x + .5);
+        weight += alpha;
+      }
+    }
+    return weight > 0 ? sum / weight / width - .5 : 0;
+  });
 }
 
 export class GuestSheets {
@@ -48,13 +67,8 @@ export class GuestSheets {
       if (this.sheets.get(id) !== sheet) return;
       texture.image = bitmap;
       texture.needsUpdate = true;
-      // Ray hits through the space around hair, legs or a tail should pass through.
-      const mask = document.createElement('canvas');
-      mask.width = MASK_WIDTH;
-      mask.height = MASK_HEIGHT;
-      const ctx = mask.getContext('2d')!;
-      ctx.drawImage(bitmap, 0, 0, mask.width, mask.height);
-      sheet.coverage = ctx.getImageData(0, 0, mask.width, mask.height).data;
+      sheet.coverage = paintCoverage(bitmap, MASK_WIDTH, MASK_HEIGHT);
+      sheet.feet = shoeCenters(sheet.coverage);
     };
     bitmap.onerror = () => {
       if (this.sheets.get(id) !== sheet) return;
@@ -106,24 +120,20 @@ export class StorybookGuest {
   constructor(customer: CustomerDef, private sheet: Sheet, vip: boolean) {
     this.seatedHeight = sittingHeight[customer.id] ?? 1.84;
     this.figure = new THREE.Mesh(this.paper, new THREE.MeshBasicMaterial({
-      map: sheet.texture, transparent: true, alphaTest: .075, depthWrite: true, toneMapped: false,
+      map: sheet.texture, transparent: true, alphaTest: .075, depthWrite: true, toneMapped: false, vertexColors: true,
     }));
     this.figure.visible = false;
-    this.figure.castShadow = true;
+    // A light watercolor wash from the window. The floor contact is drawn under the shoe soles.
+    const color = new THREE.BufferAttribute(new Float32Array(this.baseUV.count * 3), 3);
+    for (let i = 0; i < color.count; i++) {
+      const u = this.baseUV.getX(i), v = this.baseUV.getY(i);
+      const shade = (1 - v) * .065 + u * .024;
+      color.setXYZ(i, 1 - shade, 1 - shade * .92, 1 - shade * .75);
+    }
+    this.paper.setAttribute('color', color);
     (this.paper.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
     this.paper.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 1.05, .14), 1.75);
-    const cast = this.figure.raycast.bind(this.figure);
-    this.figure.raycast = (ray, hits) => {
-      if (!this.sheet.coverage || !this.figure.visible) return;
-      const candidates: THREE.Intersection[] = [];
-      cast(ray, candidates);
-      for (const hit of candidates) {
-        if (!hit.uv) continue;
-        const x = THREE.MathUtils.clamp(Math.floor(hit.uv.x * MASK_WIDTH), 0, MASK_WIDTH - 1);
-        const y = THREE.MathUtils.clamp(Math.floor((1 - hit.uv.y) * MASK_HEIGHT), 0, MASK_HEIGHT - 1);
-        if (this.sheet.coverage[(y * MASK_WIDTH + x) * 4 + 3] > 40) hits.push(hit);
-      }
-    };
+    raycastPaint(this.figure, () => this.sheet.coverage);
     this.ring = new THREE.Mesh(new THREE.RingGeometry(.38,.44,48), new THREE.MeshBasicMaterial({
       color: '#eeb399', transparent: true, opacity: 0, depthWrite: false,
     }));
@@ -158,6 +168,7 @@ export class StorybookGuest {
   setHovered(value: boolean) { this.hovered = value; }
   setWalking(value: boolean) { this.walking = value; }
   setMood(mood: Mood) { this.mood = mood; }
+  setLight(color: THREE.Color) { this.figure.material.color.copy(color); }
 
   setSitting(value: boolean) {
     if (value === this.seated) return;
@@ -174,6 +185,14 @@ export class StorybookGuest {
 
   getHeadAnchor(out: THREE.Vector3) {
     return this.root.localToWorld(out.set(0,this.top + .025,.12));
+  }
+
+  placeFloorShadow(shadow: THREE.Mesh) {
+    shadow.visible = this.figure.visible;
+    const height = this.seated ? this.seatedHeight : this.seatedHeight * 1.18;
+    const x = (this.sheet.feet?.[this.frame] ?? 0) * height * CELL_ASPECT;
+    const flip = this.walking && this.facing < 0 ? -1 : 1;
+    this.root.localToWorld(shadow.position.set(x * flip, .019, this.seated ? .375 : .08));
   }
 
   private showFrame(frame: number) {
@@ -206,7 +225,8 @@ export class StorybookGuest {
     this.figure.visible = !!this.sheet.texture.image;
     const height = this.seated ? this.seatedHeight : this.seatedHeight * 1.18;
     const settle = this.seated ? .065 * Math.exp(-9 * this.poseTime) * Math.cos(14 * this.poseTime) : 0;
-    const lift = this.seated ? .055 + settle : .013 + Math.sin(Math.PI * this.stride * .5) ** 2 * .027;
+    const step = this.walking ? Math.sin(Math.PI * this.stride * .5) ** 2 * .016 : 0;
+    const lift = .003 - SOLE_MARGIN * height + settle + step;
     const breathing = this.walking ? 0 : Math.sin(this.elapsed * 1.8) * .0045;
     const smile = this.cheerLeft > 0 ? Math.sin(this.cheerLeft / .8 * Math.PI) * .035 : 0;
     const slouch = this.mood === 'sad' ? .025 : 0;

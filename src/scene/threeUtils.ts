@@ -110,6 +110,33 @@ export function makeCanvasTexture(
   return texture;
 }
 
+export interface PaintCoverage { width: number; height: number; pixels: Uint8ClampedArray; }
+
+export function paintCoverage(image: HTMLImageElement, width: number, height: number): PaintCoverage {
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(image, 0, 0, width, height);
+  return { width, height, pixels: ctx.getImageData(0, 0, width, height).data };
+}
+
+/** Let rays through transparent gaps in painted hair, chair legs, flowers and tabletops. */
+export function raycastPaint(mesh: THREE.Mesh, getCoverage: () => PaintCoverage | undefined) {
+  const cast = mesh.raycast.bind(mesh);
+  mesh.raycast = (ray, hits) => {
+    const mask = getCoverage();
+    if (!mask || !mesh.visible) return;
+    const candidates: THREE.Intersection[] = [];
+    cast(ray, candidates);
+    for (const hit of candidates) {
+      if (!hit.uv) continue;
+      const x = THREE.MathUtils.clamp(Math.floor(hit.uv.x * mask.width), 0, mask.width - 1);
+      const y = THREE.MathUtils.clamp(Math.floor((1 - hit.uv.y) * mask.height), 0, mask.height - 1);
+      if (mask.pixels[(y * mask.width + x) * 4 + 3] > 40) hits.push(hit);
+    }
+  };
+}
+
 export function radialTexture(inner: string, outer: string, size = 256): THREE.CanvasTexture {
   return makeCanvasTexture(size, size, (ctx, w, h) => {
     const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
@@ -123,10 +150,11 @@ export function radialTexture(inner: string, outer: string, size = 256): THREE.C
 
 export function softShadowTexture(): THREE.CanvasTexture {
   return makeCanvasTexture(256, 256, (ctx, w, h) => {
-    const g = ctx.createRadialGradient(w / 2, h / 2, 10, w / 2, h / 2, w / 2);
-    g.addColorStop(0, 'rgba(92, 58, 65, 0.28)');
-    g.addColorStop(0.6, 'rgba(92, 58, 65, 0.1)');
-    g.addColorStop(1, 'rgba(92, 58, 65, 0)');
+    const g = ctx.createRadialGradient(w * .46, h * .51, 4, w * .51, h * .49, w * .49);
+    g.addColorStop(0, 'rgba(89, 64, 58, 0.57)');
+    g.addColorStop(.26, 'rgba(102, 74, 63, 0.41)');
+    g.addColorStop(.62, 'rgba(129, 90, 71, 0.18)');
+    g.addColorStop(1, 'rgba(151, 109, 83, 0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
   });

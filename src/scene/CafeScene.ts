@@ -2,11 +2,11 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { CustomerDef, DayTheme, DrinkDef, UpgradeId } from '../game/types';
 import { CUSTOMERS, DRINKS_MAP, DRINKS } from '../game/data';
 import { GuestSheets, StorybookGuest } from './StorybookGuest';
+import { PaintedRoom, drawGarden, paperFinish } from './PaintedRoom';
 import {
   archShape,
   contactShadowTexture,
@@ -73,17 +73,11 @@ export interface SceneOptions {
 }
 
 const SEATS = [
-  { x: -2.35, z: 2.6, face: -1 },
-  { x: 0, z: 2.6, face: -1 },
-  { x: 2.35, z: 2.6, face: -1 },
+  { x: -2.13, z: 2.46, angle: .11, tableX: -2.87, tableZ: 3.04 },
+  { x: 0, z: 2.64, angle: -.035, tableX: .78, tableZ: 3.20 },
+  { x: 2.15, z: 2.37, angle: -.12, tableX: 2.93, tableZ: 2.99 },
 ];
 
-// foreground chair row where customers actually sit
-const CHAIR_Z = 2.5;
-// table sits in front of the guest so the camera still sees a full body
-const TABLE_Z = 3.28;
-// tables stand beside each chair rather than blocking the guest
-const TABLE_OFFSETS = [-1.24, 1.24, 1.24];
 // open aisle in front of the tables that guests walk along
 const AISLE_Z = 4.4;
 const EXIT_X = 8.6;
@@ -95,15 +89,17 @@ const BACK_STOOLS = [
   { x: 2.35, z: -3.86 },
 ];
 
-const SKY_W = 900;
-const SKY_H = 1100;
+const SKY_W = 1536;
+const SKY_H = 888;
 
 export class CafeScene {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   private composer: EffectComposer;
-  private bloom: UnrealBloomPass;
+  private finish = paperFinish();
+  private paint = new PaintedRoom();
+  private garden?: HTMLImageElement;
   private clockTime = 0;
   private customers = new Map<string, SceneCustomer>();
   private sheets = new GuestSheets();
@@ -190,14 +186,17 @@ export class CafeScene {
     });
     this.composer = new EffectComposer(this.renderer, renderTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.11, 0.42, 0.95);
-    this.composer.addPass(this.bloom);
+    this.composer.addPass(this.finish);
     this.composer.addPass(new OutputPass());
 
     this.buildEnvironment();
     this.buildLights();
     this.buildPetals();
     this.setTheme(theme);
+    this.paint.loadGarden(image => {
+      this.garden = image;
+      this.redrawWindow();
+    });
     this.bindEvents();
     this.resize();
   }
@@ -226,8 +225,8 @@ export class CafeScene {
       this.cameraBase.set(-0.5, 4.7, 10.5);
       this.lookBase.set(-0.1, 1.6, -0.9);
     } else {
-      this.cameraBase.set(0, 3.55, 8.0);
-      this.lookBase.set(0, 1.5, 0.25);
+      this.cameraBase.set(0, 3.60, 8.25);
+      this.lookBase.set(0, 1.66, .25);
     }
   }
 
@@ -265,16 +264,17 @@ export class CafeScene {
   spawnCustomer(orderId: string, customer: CustomerDef, seat: number, vip = false) {
     const seatData = SEATS[seat];
     const figure = new StorybookGuest(customer, this.sheets.get(customer.id), vip);
+    figure.setLight(this.paint.paperLight);
     const startX = EXIT_X;
     figure.root.position.set(startX, 0, AISLE_Z);
     figure.setWalking(true);
     this.scene.add(figure.root);
     const shadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.18, .72),
-      new THREE.MeshBasicMaterial({ map: this.softShadowTexture, transparent: true, depthWrite: false, opacity: 0.82 }),
+      new THREE.PlaneGeometry(1.04, .56),
+      new THREE.MeshBasicMaterial({ map: this.softShadowTexture, transparent: true, depthWrite: false, opacity: .95 }),
     );
     shadow.rotation.x = -Math.PI / 2;
-    shadow.position.set(startX, 0.008, AISLE_Z + 0.15);
+    shadow.visible = false;
     this.scene.add(shadow);
     this.customers.set(orderId, {
       orderId,
@@ -283,7 +283,7 @@ export class CafeScene {
       state: 'walking',
       path: [
         { x: seatData.x, z: AISLE_Z },
-        { x: seatData.x, z: CHAIR_Z },
+        { x: seatData.x, z: seatData.z },
       ],
       leaveTimer: 0,
       mood: 'neutral',
@@ -320,7 +320,8 @@ export class CafeScene {
       if (o instanceof THREE.Mesh) o.castShadow = false;
     });
     this.scene.add(cup.group);
-    const end = new THREE.Vector3(SEATS[c.seat].x + TABLE_OFFSETS[c.seat], 0.98, TABLE_Z);
+    const seat = SEATS[c.seat];
+    const end = new THREE.Vector3(seat.tableX + .09, .83, seat.tableZ + .12);
     this.flights.push({
       group: cup.group,
       start: cup.group.position.clone(),
@@ -331,7 +332,7 @@ export class CafeScene {
       orderId,
     });
     // tinted sparkle trail will follow in update
-    if (drink) this.spawnMiniHearts(SEATS[c.seat].x, 1.35, CHAIR_Z + 0.3, 4, 0.55);
+    if (drink) this.spawnMiniHearts(seat.x, 1.35, seat.z + .3, 4, .55);
   }
 
   sendCustomerAway(orderId: string, angry: boolean) {
@@ -442,11 +443,17 @@ export class CafeScene {
     dom.removeEventListener('click', this.onClick);
     for (const c of this.customers.values()) {
       c.figure.dispose();
+      c.shadow.removeFromParent();
       c.shadow.geometry.dispose();
       (c.shadow.material as THREE.Material).dispose();
     }
     this.customers.clear();
     this.sheets.dispose();
+    this.paint.dispose();
+    this.windowTexture.dispose();
+    this.softShadowTexture.dispose();
+    this.contactShadowTex.dispose();
+    this.finish.dispose();
     this.composer.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
@@ -474,6 +481,7 @@ export class CafeScene {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
     this.composer.setSize(w, h);
+    this.finish.uniforms.pixel.value.set(.98 / w, .98 / h);
   };
 
   private customerAt(clientX: number, clientY: number): string | null {
@@ -483,7 +491,7 @@ export class CafeScene {
       .filter((c) => c.state === 'waiting')
       .map((c) => c.figure.root);
     const hits = this.raycaster.intersectObjects(roots, true);
-    if (!hits.length) return null;
+    if (!hits.length || this.paint.tableCovers(this.raycaster, hits[0].distance)) return null;
     let obj: THREE.Object3D | null = hits[0].object;
     while (obj && !obj.userData.customer) obj = obj.parent;
     if (obj?.userData.customer instanceof StorybookGuest) {
@@ -510,7 +518,7 @@ export class CafeScene {
 
   private onClick = (event: MouseEvent) => {
     if (!this.interactive) return;
-    const id = this.customerAt(event.clientX, event.clientY) ?? this.hoveredId;
+    const id = this.customerAt(event.clientX, event.clientY);
     if (id) this.options.onCustomerClick?.(id);
   };
 
@@ -527,9 +535,11 @@ export class CafeScene {
     if (this.cameraMode === 'play' && this.camera.aspect < .8) {
       let left = Infinity;
       let right = -Infinity;
+      let front = 0;
       for (const guest of this.customers.values()) {
         if (guest.state === 'leaving') continue;
         const x = SEATS[guest.seat].x;
+        front = Math.max(front, SEATS[guest.seat].z);
         left = Math.min(left, x);
         right = Math.max(right, x);
       }
@@ -539,7 +549,7 @@ export class CafeScene {
         look.x += center;
         // Keep a lone guest close. For a group, fit both outer silhouettes and their tickets.
         const tilt = Math.atan2(target.y - look.y, target.z - look.z);
-        const distance = (target.z - CHAIR_Z - .16) * Math.cos(tilt) + (target.y - 1.2) * Math.sin(tilt);
+        const distance = (target.z - front - .16) * Math.cos(tilt) + (target.y - 1.2) * Math.sin(tilt);
         const halfWidth = (right - left) / 2 + .84;
         const halfFov = THREE.MathUtils.degToRad(this.camera.fov / 2);
         const retreat = Math.max(0, halfWidth / (Math.tan(halfFov) * this.camera.aspect) - distance);
@@ -566,6 +576,7 @@ export class CafeScene {
       { x: EXIT_X, z: AISLE_Z },
     ];
     c.figure.setSitting(false);
+    c.figure.root.rotation.y = 0;
     c.figure.faceRight(true);
     c.figure.setWalking(true);
   }
@@ -590,8 +601,6 @@ export class CafeScene {
       budget -= step;
       if (step >= dist) c.path.shift();
     }
-    c.shadow.position.x = pos.x;
-    c.shadow.position.z = pos.z + 0.15;
     return c.path.length === 0;
   }
 
@@ -601,6 +610,7 @@ export class CafeScene {
       if (c.state === 'walking') {
         if (this.stepPath(c, dt, 2.2)) {
           c.state = 'waiting';
+          figure.root.rotation.y = SEATS[c.seat].angle;
           figure.setWalking(false);
           figure.setSitting(true);
           this.options.onCustomerArrive?.(id);
@@ -618,6 +628,7 @@ export class CafeScene {
         }
       }
       figure.update(dt);
+      figure.placeFloorShadow(c.shadow);
     }
   }
 
@@ -627,6 +638,7 @@ export class CafeScene {
     this.busySeats.delete(c.seat);
     this.customers.delete(id);
     c.figure.dispose();
+    c.shadow.removeFromParent();
     c.shadow.geometry.dispose();
     (c.shadow.material as THREE.Material).dispose();
     this.options.onCustomerGone?.(id);
@@ -697,7 +709,8 @@ export class CafeScene {
           if (f.orderId) {
             const c = this.customers.get(f.orderId);
             if (c) {
-              this.spawnMiniHearts(SEATS[c.seat].x, 1.6, CHAIR_Z + 0.3, 8, 1);
+              const seat = SEATS[c.seat];
+              this.spawnMiniHearts(seat.x, 1.6, seat.z + .3, 8, 1);
             }
           }
           disposeCup(f.group as unknown as THREE.Group);
@@ -787,52 +800,39 @@ export class CafeScene {
     this.sunLight.shadow.bias = -0.0006;
     this.sunLight.shadow.normalBias = 0.02;
     this.sunLight.shadow.radius = 4;
+    this.sunLight.shadow.intensity = .27;
     this.scene.add(this.sunLight, this.sunLight.target);
 
     this.fillLight.position.set(3, 4, 8);
     this.scene.add(this.fillLight);
 
-    const bulbSpots: [number, number, number][] = [
-      [-3, 3.15, 0.8],
-      [0, 3.05, 0.9],
-      [3, 3.15, 0.8],
-    ];
-    const shadeColors = ['#ffb0c8', '#ffdf9e', '#9fe5cc'];
-    bulbSpots.forEach(([x, y, z], index) => {
-      const light = new THREE.PointLight(0xffd8a6, 5.5, 6.5, 2);
+    for (const x of [-3.05, 3.05]) {
+      const y = 3.32, z = .8;
+      const light = new THREE.PointLight(0xffd8a6, 4, 6.5, 2);
       light.position.set(x, y, z);
       this.scene.add(light);
       this.bulbLights.push(light);
-      // lamp shade + hanging cord
+      const shadeHeight = .53;
+      const bottom = y - .025;
+      const cordTop = 6.04;
+      const cordBottom = bottom + shadeHeight;
       const cord = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.009, 0.009, 5.9 - y, 6),
-        standard('#8e6f6a', { roughness: 0.9 }),
+        new THREE.CylinderGeometry(.008, .008, cordTop - cordBottom, 6),
+        standard('#806755', { roughness: .92 }),
       );
-      cord.position.set(x, (5.9 + y) / 2 + 0.15, z);
+      cord.position.set(x, (cordTop + cordBottom) / 2, z);
       this.scene.add(cord);
-      const shade = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.13, 0.38, 0.34, 32, 1, true),
-        standard(shadeColors[index], { roughness: 0.5, side: THREE.DoubleSide }),
-      );
-      shade.position.set(x, y + 0.22, z);
-      shade.castShadow = true;
-      this.scene.add(shade);
-      const shadeRim = new THREE.Mesh(new THREE.TorusGeometry(0.375, 0.014, 6, 36), standard('#fff2d8', { roughness: 0.35, metalness: 0.1 }));
-      shadeRim.rotation.x = Math.PI / 2;
-      shadeRim.position.set(x, y + 0.05, z);
-      this.scene.add(shadeRim);
-      const charm = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), new THREE.MeshBasicMaterial({ color: '#ffd98a', toneMapped: false }));
-      charm.position.set(x, y - 0.14, z);
-      this.scene.add(charm);
-      const charmString = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.14, 4), standard('#d8b487', { roughness: 0.5 }));
-      charmString.position.set(x, y - 0.07, z);
-      this.scene.add(charmString);
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.1, 20, 16),
-        new THREE.MeshBasicMaterial({ color: '#ffe3b0', toneMapped: false }),
-      );
-      bulb.position.set(x, y + 0.02, z);
-      this.scene.add(bulb);
+      const shadeModel = new THREE.Group();
+      const shade = new THREE.Mesh(new THREE.CylinderGeometry(.12, .36, .35, 32, 1, true),
+        standard('#f4dab7', { roughness: .9, side: THREE.DoubleSide }));
+      shade.position.y = .21;
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(.083, 14, 12),
+        new THREE.MeshBasicMaterial({ color: '#ffe3b0', toneMapped: false }));
+      bulb.position.y = .05;
+      shadeModel.add(shade, bulb);
+      const lamp = this.paint.furnishing('pendant', shadeModel, shadeHeight);
+      lamp.position.set(x, bottom, z);
+      this.scene.add(lamp);
       const halo = new THREE.Sprite(
         new THREE.SpriteMaterial({
           map: radialTexture('rgba(255,220,170,0.55)', 'rgba(255,220,170,0)', 128),
@@ -842,10 +842,10 @@ export class CafeScene {
           opacity: 0.55,
         }),
       );
-      halo.position.copy(bulb.position);
+      halo.position.set(x, bottom + .08, z + .035);
       halo.scale.setScalar(1.3);
       this.scene.add(halo);
-    });
+    }
   }
 
   private updateLights(dt: number) {
@@ -854,10 +854,10 @@ export class CafeScene {
     const dusk = theme.id === 'dusk';
     const target = new THREE.Color(theme.ambient);
     this.ambientLight.color.lerp(target, dt * 1.6);
-    this.ambientLight.intensity = THREE.MathUtils.damp(this.ambientLight.intensity, night ? 0.4 : dusk ? 0.48 : 0.5, 2.2, dt);
+    this.ambientLight.intensity = THREE.MathUtils.damp(this.ambientLight.intensity, night ? .65 : dusk ? .93 : 1.15, 2.2, dt);
     const sunColor = new THREE.Color(theme.sun);
     this.sunLight.color.lerp(sunColor, dt * 1.6);
-    this.sunLight.intensity = THREE.MathUtils.damp(this.sunLight.intensity, night ? 0.7 : dusk ? 2.0 : 2.2, 2, dt);
+    this.sunLight.intensity = THREE.MathUtils.damp(this.sunLight.intensity, night ? .6 : dusk ? 1.42 : 1.40, 2, dt);
     const fillColor = new THREE.Color(theme.accent).lerp(new THREE.Color('#eaf3ff'), 0.72);
     this.fillLight.color.lerp(fillColor, dt * 1.5);
     this.fillLight.intensity = THREE.MathUtils.damp(this.fillLight.intensity, night ? 1.25 : dusk ? 0.8 : 0.5, 2, dt);
@@ -874,9 +874,9 @@ export class CafeScene {
 
   private setTheme(theme: DayTheme) {
     this.theme = theme;
-    const ctx = this.skyCanvas.getContext('2d')!;
-    this.drawSky(ctx, SKY_W, SKY_H, theme);
-    this.windowTexture.needsUpdate = true;
+    this.paint.setTheme(theme);
+    for (const guest of this.customers.values()) guest.figure.setLight(this.paint.paperLight);
+    this.redrawWindow();
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.set(theme.fog);
     }
@@ -887,6 +887,13 @@ export class CafeScene {
     }
     document.documentElement.style.setProperty('--theme-accent', theme.accent);
     document.documentElement.style.setProperty('--sky-glow', theme.glow);
+  }
+
+  private redrawWindow() {
+    const ctx = this.skyCanvas.getContext('2d')!;
+    if (this.garden) drawGarden(ctx, this.garden, this.theme);
+    else this.drawSky(ctx, SKY_W, SKY_H, this.theme);
+    this.windowTexture.needsUpdate = true;
   }
 
   // ───────────────────────────── environment
@@ -924,132 +931,38 @@ export class CafeScene {
   }
 
   private buildFloor() {
-    const floorTex = makeCanvasTexture(
-      1024,
-      1024,
-      (ctx, w, h) => {
-        const rand = mulberry(42311);
-        const tiles = 6;
-        const size = w / tiles;
-        // A creamy terrazzo base with only a few quiet tinted tiles keeps the
-        // floor from competing with the counter and guests.
-        const palette = ['#fdf2e4', '#fbe9e2', '#f4efe4', '#f9ecec', '#eef2e6', '#fdf2e4'];
-        for (let row = 0; row < tiles; row++) {
-          for (let col = 0; col < tiles; col++) {
-            ctx.fillStyle = palette[(row + col * 2 + (row % 2)) % palette.length];
-            ctx.fillRect(col * size, row * size, size, size);
-            // terrazzo chips
-            const chips = ['rgba(240,164,182,0.34)', 'rgba(126,201,172,0.34)', 'rgba(240,196,124,0.36)', 'rgba(174,150,222,0.24)', 'rgba(255,255,255,0.6)'];
-            for (let i = 0; i < 22; i++) {
-              ctx.fillStyle = chips[Math.floor(rand() * chips.length)];
-              const x = col * size + 8 + rand() * (size - 16);
-              const y = row * size + 8 + rand() * (size - 16);
-              const r = 1.5 + rand() * 4.5;
-              ctx.beginPath();
-              ctx.ellipse(x, y, r, r * (0.45 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
-              ctx.fill();
-            }
-          }
-        }
-        ctx.strokeStyle = 'rgba(225, 178, 185, 0.55)';
-        ctx.lineWidth = 3;
-        for (let i = 0; i <= tiles; i++) {
-          ctx.beginPath();
-          ctx.moveTo(i * size, 0);
-          ctx.lineTo(i * size, h);
-          ctx.moveTo(0, i * size);
-          ctx.lineTo(w, i * size);
-          ctx.stroke();
-        }
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = 1.2;
-        for (let i = 0; i <= tiles; i++) {
-          ctx.beginPath();
-          ctx.moveTo(i * size + 2.5, 0);
-          ctx.lineTo(i * size + 2.5, h);
-          ctx.moveTo(0, i * size + 2.5);
-          ctx.lineTo(w, i * size + 2.5);
-          ctx.stroke();
-        }
-      },
-      { repeat: [2, 2] },
-    );
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(22, 18),
-      new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.78, metalness: 0.02 }),
-    );
+    const floorGeometry = new THREE.PlaneGeometry(22, 18);
+    const uv = floorGeometry.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 4.5, uv.getY(i) * 3.7);
+    const floor = new THREE.Mesh(floorGeometry, this.paint.surfaces.floor);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(0, 0, -1);
     floor.receiveShadow = true;
     this.scene.add(floor);
 
-    // pink rug behind the counter
-    const rugTex = makeCanvasTexture(1024, 1024, (ctx, w, h) => {
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = '#fff6ea';
-      ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.49, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#ffc6d8';
-      ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.465, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#ffe5ec';
-      ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.43, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#fff7ec';
-      ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.34, 0, Math.PI * 2);
-      ctx.fill();
-      const rand = mulberry(901);
-      const dotColors = ['#8fdcc0', '#ffd27d', '#c7b0e8', '#ff9fbc'];
-      for (let i = 0; i < 24; i++) {
-        const a = (i / 24) * Math.PI * 2;
-        const r = w * 0.397;
-        ctx.fillStyle = dotColors[i % dotColors.length];
-        ctx.beginPath();
-        ctx.arc(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * r, 10, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      // soft scallop border
-      ctx.strokeStyle = '#ff9fbc';
-      ctx.lineWidth = 10;
-      for (let i = 0; i < 28; i++) {
-        const a0 = (i / 28) * Math.PI * 2;
-        const a1 = ((i + 1) / 28) * Math.PI * 2;
-        ctx.beginPath();
-        ctx.arc(w / 2, h / 2, w * 0.448, a0, a1);
-        ctx.stroke();
-      }
-      ctx.strokeStyle = '#f2afc4';
-      ctx.lineWidth = 5;
-      ctx.setLineDash([5, 15]);
-      ctx.beginPath();
-      ctx.arc(w / 2, h / 2, w * 0.3, 0, Math.PI * 2);
-      ctx.stroke();
+    const runner = makeCanvasTexture(768, 256, (ctx, w, h) => {
+      const rand = mulberry(42311);
+      ctx.fillStyle = '#cbb397';
+      ctx.beginPath(); ctx.roundRect(6, 6, w - 12, h - 12, 28); ctx.fill();
+      ctx.strokeStyle = '#a78b77'; ctx.lineWidth = 4; ctx.stroke();
+      ctx.strokeStyle = '#eee0c8'; ctx.lineWidth = 3; ctx.setLineDash([5, 5]);
+      ctx.strokeRect(21, 21, w - 42, h - 42);
       ctx.setLineDash([]);
-      for (let i = 0; i < 26; i++) {
-        const a = rand() * Math.PI * 2;
-        const r = rand() * w * 0.26;
-        ctx.fillStyle = rand() > 0.5 ? 'rgba(255,143,175,0.5)' : 'rgba(128,209,179,0.5)';
-        ctx.beginPath();
-        ctx.arc(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * r, 3 + rand() * 4, 0, Math.PI * 2);
-        ctx.fill();
+      for (let i = 0; i < 3600; i++) {
+        ctx.fillStyle = i % 2 ? 'rgba(255,246,222,.16)' : 'rgba(101,76,58,.09)';
+        ctx.fillRect(25 + rand() * (w - 50), 25 + rand() * (h - 50), 2 + rand() * 8, .9);
       }
     });
-    const rug = new THREE.Mesh(
-      new THREE.CircleGeometry(3.85, 64),
-      new THREE.MeshStandardMaterial({ map: rugTex, transparent: true, roughness: 1 }),
-    );
+    const rug = new THREE.Mesh(new THREE.PlaneGeometry(6.65, 1.65),
+      new THREE.MeshStandardMaterial({ map: runner, transparent: true, roughness: 1, depthWrite: false }));
     rug.rotation.x = -Math.PI / 2;
-    rug.position.set(0, 0.012, -3.15);
+    rug.position.set(0, .009, -3.87);
     rug.receiveShadow = true;
     this.scene.add(rug);
   }
 
   private buildWalls() {
-    const wallMat = standard('#ffe4cf', { roughness: 0.95 });
+    const wallMat = this.paint.surfaces.plaster;
     // segmented wall so the two arched windows are real openings onto the sky
     const sections: [number, number, number, number][] = [
       // [centerX, centerY, width, height]
@@ -1062,14 +975,46 @@ export class CafeScene {
       [4.05, 0.675, 3.05, 1.35],
     ];
     for (const [x, y, w, h] of sections) {
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.4), wallMat);
+      const geometry = new THREE.BoxGeometry(w, h, .4);
+      this.wallpaperUV(geometry, x, y);
+      const panel = new THREE.Mesh(geometry, wallMat);
       panel.position.set(x, y, -5.45);
       panel.receiveShadow = true;
       this.scene.add(panel);
     }
 
+    // The wall sections leave rectangular openings. Paper the spandrels around each curved frame.
+    const radius = 1.525;
+    for (const x of [-4.05, 4.05]) {
+      for (const side of [-1, 1]) {
+        const shape = new THREE.Shape();
+        shape.moveTo(0, radius);
+        shape.lineTo(side * radius, radius);
+        shape.lineTo(side * radius, 0);
+        shape.absarc(0, 0, radius, side < 0 ? Math.PI : 0, Math.PI / 2, side < 0);
+        shape.closePath();
+        const geometry = new THREE.ShapeGeometry(shape, 32);
+        this.wallpaperUV(geometry, x, 3.025);
+        const corner = new THREE.Mesh(geometry, wallMat);
+        corner.position.set(x, 3.025, -5.25);
+        this.scene.add(corner);
+      }
+    }
+
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(24, 19),
+      standard('#fff3df', { roughness: 1, emissive: '#ad9980', emissiveIntensity: .45 }));
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.set(0, 6.12, 2.8);
+    this.scene.add(ceiling);
+    const timber = standard('#dac4a8', { roughness: .96 });
+    for (const z of [-4.9, -.75, 3.4, 7.55]) {
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(22, .12, .16), timber);
+      beam.position.set(0, 6.03, z);
+      this.scene.add(beam);
+    }
+
     // wainscot
-    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#79cbb0', { roughness: 0.9 }));
+    const wainscot = new THREE.Mesh(new THREE.BoxGeometry(20, 1.1, 0.16), standard('#abc0a9', { roughness: .96 }));
     wainscot.position.set(0, 0.55, -5.22);
     wainscot.receiveShadow = true;
     this.scene.add(wainscot);
@@ -1080,7 +1025,7 @@ export class CafeScene {
 
     // vertical fluted panel lines
     for (let i = -8; i <= 8; i += 2) {
-      const line = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.02, 0.02), standard('#86cbb4', { roughness: 0.9 }));
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.02, 0.02), standard('#c2c9af', { roughness: .95 }));
       line.position.set(i, 0.55, -5.13);
       this.scene.add(line);
     }
@@ -1111,18 +1056,24 @@ export class CafeScene {
     this.buildShelfTower(6.35);
   }
 
+  private wallpaperUV(geometry: THREE.BufferGeometry, x: number, y: number) {
+    const points = geometry.attributes.position;
+    const uv = geometry.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, (x + points.getX(i)) / 2.8, (y + points.getY(i)) / 2.8);
+  }
+
   private buildShelfTower(x: number) {
-      const cabinet = new THREE.Mesh(new RoundedBoxGeometry(1.5, 3.0, 0.55, 4, 0.12), standard('#f7d6c4', { roughness: 0.8 }));
+      const cabinet = new THREE.Mesh(new RoundedBoxGeometry(1.5, 3.0, 0.55, 4, 0.12), standard('#ddc4a6', { roughness: .96 }));
     cabinet.position.set(x, 1.65, -5.0);
     cabinet.castShadow = true;
     cabinet.receiveShadow = true;
     this.scene.add(cabinet);
     this.addContactShadow(x, -5.0, 1.6, 0.65, 0.18);
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.5, 0.04), standard('#f8d4dc', { roughness: 0.9 }));
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.5, 0.04), standard('#ddd0ac', { roughness: .96 }));
     panel.position.set(x, 1.7, -4.7);
     this.scene.add(panel);
     for (let i = 0; i < 3; i++) {
-      const shelf = new THREE.Mesh(new RoundedBoxGeometry(1.22, 0.06, 0.35, 2, 0.02), standard('#fff6e9', { roughness: 0.75 }));
+      const shelf = new THREE.Mesh(new RoundedBoxGeometry(1.22, 0.06, 0.35, 2, 0.02), this.paint.surfaces.oak);
       shelf.position.set(x, 0.85 + i * 0.85, -4.64);
       shelf.castShadow = true;
       this.scene.add(shelf);
@@ -1168,7 +1119,8 @@ export class CafeScene {
       maxY = Math.max(maxY, pos.getY(i));
     }
     for (let i = 0; i < uv.count; i++) {
-      uv.setXY(i, (pos.getX(i) - minX) / (maxX - minX), (pos.getY(i) - minY) / (maxY - minY));
+      const panoramaX = (x < 0 ? .015 : .525) + .46 * (pos.getX(i) - minX) / (maxX - minX);
+      uv.setXY(i, panoramaX, (pos.getY(i) - minY) / (maxY - minY));
     }
     const sky = new THREE.Mesh(
       skyShapeGeo,
@@ -1836,80 +1788,56 @@ export class CafeScene {
   }
 
   private buildCounter() {
-    const green = standard('#a9e6d1', { roughness: 0.66 });
-    const dark = standard('#7fd3b6', { roughness: 0.7 });
-    const cream = standard('#fff4e3', { roughness: 0.72 });
-    const pink = standard('#ffb0c8', { roughness: 0.68 });
-    const body = new THREE.Mesh(new RoundedBoxGeometry(9.0, 0.98, 1.3, 6, 0.22), green);
-    body.position.set(0, 0.5, 1.12);
-    body.castShadow = true;
+    const joinery = standard('#9eae95', { roughness: .97 });
+    const oak = this.paint.surfaces.oak;
+    const body = new THREE.Mesh(new RoundedBoxGeometry(9.04, .98, 1.30, 4, .07), joinery);
+    body.position.set(0, .51, 1.12);
     body.receiveShadow = true;
     this.scene.add(body);
-    this.addContactShadow(0, 1.12, 9.2, 1.45, 0.22);
+    this.addContactShadow(0, 1.12, 9.25, 1.55, .55);
 
-    // fluted front
-    for (let i = 0; i < 27; i++) {
-      const material = i % 9 === 4 ? pink : i % 3 === 0 ? cream : i % 2 === 0 ? dark : green;
-      const flute = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.78, 14), material);
-      flute.position.set(-4.16 + i * 0.32, 0.55, 1.76);
-      flute.receiveShadow = true;
-      this.scene.add(flute);
-    }
-    const ribbon = new THREE.Mesh(new RoundedBoxGeometry(9.04, 0.075, 0.035, 3, 0.02), standard('#ffe7c2', { roughness: 0.55 }));
-    ribbon.position.set(0, 0.915, 1.79);
-    this.scene.add(ribbon);
-    const kick = new THREE.Mesh(new RoundedBoxGeometry(9.06, 0.16, 1.32, 3, 0.05), standard('#ff9fbb', { roughness: 0.66 }));
-    kick.position.set(0, 0.075, 1.14);
-    this.scene.add(kick);
-
-    const topTex = makeCanvasTexture(1024, 512, (ctx, w, h) => {
-      ctx.fillStyle = '#ffd9e2';
-      ctx.fillRect(0, 0, w, h);
-      const rand = mulberry(731);
-      const cols = ['rgba(255,255,255,0.6)', 'rgba(255,166,193,0.45)', 'rgba(151,214,190,0.4)', 'rgba(255,211,160,0.35)'];
-      for (let i = 0; i < 600; i++) {
-        ctx.fillStyle = cols[Math.floor(rand() * cols.length)];
-        ctx.beginPath();
-        ctx.arc(rand() * w, rand() * h, 1 + rand() * 5, 0, Math.PI * 2);
-        ctx.fill();
+    const recessed = standard('#b6c2a8', { roughness: .97 });
+    const trim = standard('#c7c8a6', { roughness: .94 });
+    const knob = standard('#ab855d', { roughness: .76, metalness: .08 });
+    const panelWidth = 1.23;
+    for (let i = 0; i < 7; i++) {
+      const x = (i - 3) * 1.29;
+      if (i % 2 === 1) {
+        const panel = new THREE.Mesh(new THREE.PlaneGeometry(panelWidth, .73), this.paint.surfaces['counter-panel']);
+        panel.position.set(x, .52, 1.786);
+        panel.receiveShadow = true;
+        this.scene.add(panel);
+      } else {
+        // Between the painted panels sit two shallow tea drawers with wooden pulls.
+        for (const y of [.345, .705]) {
+          const face = new THREE.Mesh(new RoundedBoxGeometry(panelWidth, .325, .042, 2, .018), recessed);
+          face.position.set(x, y, 1.785);
+          face.receiveShadow = true;
+          const pull = new THREE.Mesh(new THREE.SphereGeometry(.037, 12, 8), knob);
+          pull.position.set(x, y, 1.824);
+          pull.scale.set(1.65, .75, .8);
+          this.scene.add(face, pull);
+        }
       }
-    });
-    const top = new THREE.Mesh(
-      new RoundedBoxGeometry(9.32, 0.135, 1.55, 5, 0.06),
-      new THREE.MeshStandardMaterial({ map: topTex, roughness: 0.35, metalness: 0.02 }),
-    );
+    }
+    for (const y of [.105, .94]) {
+      const beading = new THREE.Mesh(new RoundedBoxGeometry(9.1, .075, 1.34, 3, .025), trim);
+      beading.position.set(0, y, 1.13);
+      this.scene.add(beading);
+    }
+    const topGeometry = new RoundedBoxGeometry(9.31, .135, 1.56, 4, .045);
+    const points = topGeometry.attributes.position;
+    const normals = topGeometry.attributes.normal;
+    const uv = topGeometry.attributes.uv;
+    for (let i = 0; i < uv.count; i++) {
+      const vertical = Math.abs(normals.getY(i)) > .55 ? points.getZ(i) : points.getY(i);
+      uv.setXY(i, (points.getX(i) + 4.65) / 3.65, (vertical + .80) / 1.65);
+    }
+    const top = new THREE.Mesh(topGeometry, oak);
     top.position.set(0, 1.05, 1.1);
     top.castShadow = true;
     top.receiveShadow = true;
     this.scene.add(top);
-
-    const edge = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 9.2, 12), standard('#f7cf8b', { roughness: 0.3, metalness: 0.4 }));
-    edge.rotation.z = Math.PI / 2;
-    edge.position.set(0, 0.99, 1.86);
-    this.scene.add(edge);
-
-    // foot rail
-    const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 8.2, 10), standard('#d8ad76', { roughness: 0.35, metalness: 0.45 }));
-    rail.rotation.z = Math.PI / 2;
-    rail.position.set(0, 0.23, 1.94);
-    this.scene.add(rail);
-    for (const x of [-3.9, 3.9]) {
-      const support = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.2, 8), standard('#d8ad76', { roughness: 0.35, metalness: 0.45 }));
-      support.position.set(x, 0.14, 1.92);
-      support.rotation.x = 0.2;
-      this.scene.add(support);
-    }
-
-    // heart decal on front
-    const heart = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.36), new THREE.MeshBasicMaterial({ map: this.heartTex, transparent: true, opacity: 0.8, depthWrite: false }));
-    heart.position.set(-1.4, 0.55, 1.788);
-    this.scene.add(heart);
-    const heart2 = heart.clone();
-    heart2.scale.setScalar(0.65);
-    heart2.position.set(-1.0, 0.44, 1.788);
-    (heart2.material as THREE.MeshBasicMaterial).opacity = 0.4;
-    this.scene.add(heart2);
-
     this.buildCounterProps();
     this.buildTrainingTrophy();
   }
@@ -1971,8 +1899,9 @@ export class CafeScene {
       bloom.scale.y = 0.8;
       vase.add(stem, bloom);
     }
-    vase.position.set(-1.8, 1.13, 1.35);
-    this.scene.add(vase);
+    const paintedVase = this.paint.furnishing('posy', vase, .59);
+    paintedVase.position.set(-1.8, 1.13, 1.35);
+    this.scene.add(paintedVase);
 
     // register
     const register = new THREE.Group();
@@ -1998,9 +1927,10 @@ export class CafeScene {
     const earR = earL.clone();
     earR.position.x = 0.22;
     register.add(bodyReg, screen, screenFace, earL, earR);
-    register.position.set(3.25, 1.12, 1.1);
-    register.rotation.y = -0.08;
-    this.scene.add(register);
+    const till = this.paint.furnishing('register', register, .88);
+    till.position.set(3.25, 1.12, 1.1);
+    till.rotation.y = -.08;
+    this.scene.add(till);
 
     // cups & straws
     const cups = new THREE.Group();
@@ -2105,9 +2035,9 @@ export class CafeScene {
       mini.position.set(-0.15 + i * 0.15, 0.735, 0.04);
       stand.add(mini);
     }
-    stand.position.set(-0.9, 1.118, 1.12);
-    stand.scale.setScalar(1.15);
-    this.scene.add(stand);
+    const pastries = this.paint.furnishing('pastries', stand, .91);
+    pastries.position.set(-.9, 1.118, 1.12);
+    this.scene.add(pastries);
 
     // syrup bottle caddy
     const caddy = new THREE.Group();
@@ -2176,62 +2106,33 @@ export class CafeScene {
       cushion.position.y = 0.73;
       cushion.castShadow = true;
       cushion.visible = false;
-      stool.add(cushion);
       this.cushionMeshes.push(cushion);
-      stool.position.set(x, 0, -4.02);
-      this.scene.add(stool);
-      this.addContactShadow(x, -4.02, 0.78, 0.78, 0.18);
-
-      // round guest mat in front of each back stool
-      const mat = new THREE.Group();
-      const matBase = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.6, 0.035, 32), standard(seatColors[i], { roughness: 0.95 }));
-      matBase.position.y = 0.018;
-      const matInner = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.41, 0.04, 32), standard('#fff6ec', { roughness: 0.95 }));
-      matInner.position.y = 0.022;
-      const matDot = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.045, 20), standard(i === 1 ? '#ffb7ca' : '#9ee3c9', { roughness: 0.9 }));
-      matDot.position.y = 0.026;
-      mat.add(matBase, matInner, matDot);
-      mat.position.set(x, 0, BACK_STOOLS[i].z);
-      mat.receiveShadow = true;
-      this.scene.add(mat);
+      const paintedStool = this.paint.furnishing('stool', stool, .76);
+      paintedStool.position.set(x, 0, BACK_STOOLS[i].z);
+      cushion.position.set(x, .73, BACK_STOOLS[i].z + .035);
+      this.scene.add(paintedStool, cushion);
+      this.addContactShadow(x, BACK_STOOLS[i].z, .73, .55, .75, .022);
     }
 
-    // foreground tables and chairs where customers sit
-    const tableColors = ['#ffd6e4', '#c9f2e3', '#fff0c9'];
-    // Tables sit to the side of each guest so the camera sees a full body
-    // instead of a head peeking over a tabletop.
-    for (let i = 0; i < 3; i++) {
-      const x = SEATS[i].x;
-      const tx = x + TABLE_OFFSETS[i];
-      const tableColor = tableColors[i];
-      const table = new THREE.Group();
-      const top = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.5, 0.06, 32), standard(tableColor, { roughness: 0.5 }));
-      top.position.y = 0.82;
-      top.castShadow = true;
-      const column = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.76, 16), standard('#e8c9a8', { roughness: 0.45 }));
-      column.position.y = 0.41;
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.05, 24), standard('#e8c9a8', { roughness: 0.45 }));
-      base.position.y = 0.025;
-      table.add(top, column, base);
-      table.position.set(tx, 0, TABLE_Z);
+    for (const [i, seat] of SEATS.entries()) {
+      const tableModel = new THREE.Group();
+      const top = new THREE.Mesh(new THREE.CylinderGeometry(.47, .48, .055, 28), this.paint.surfaces.oak);
+      top.position.y = .79;
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(.055, .1, .75, 14), standard('#bd926c'));
+      leg.position.y = .39;
+      const foot = new THREE.Mesh(new THREE.CylinderGeometry(.24, .28, .06, 18), standard('#bd926c'));
+      foot.position.y = .03;
+      tableModel.add(top, leg, foot);
+      const table = this.paint.furnishing(i === 1 ? 'table-daisy' : 'table-rose', tableModel, 1.20, i === 2);
+      table.position.set(seat.tableX, 0, seat.tableZ);
       this.scene.add(table);
-      this.addContactShadow(tx, TABLE_Z, 1.05, 1.05, 0.18);
+      this.addContactShadow(seat.tableX + .03, seat.tableZ + .03, 1.05, .69, .9, .02);
 
-      // customer chair: guest faces the camera, so the backrest faces the counter
-      const chair = this.makeChair(seatColors[i]);
-      chair.position.set(x, 0, CHAIR_Z);
+      const chair = this.paint.furnishing(i === 1 ? 'chair-front' : 'chair-turned', this.makeChair(seatColors[i]), 1.19, i === 0);
+      chair.position.set(seat.x, 0, seat.z - .08);
+      chair.rotation.y = seat.angle;
       this.scene.add(chair);
-      this.addContactShadow(x, CHAIR_Z, 0.62, 0.62, 0.16);
-
-      // small rug under each table
-      const rug = new THREE.Mesh(
-        new THREE.CircleGeometry(0.78, 32),
-        new THREE.MeshStandardMaterial({ color: tableColor, transparent: true, opacity: 0.35, roughness: 1 }),
-      );
-      rug.rotation.x = -Math.PI / 2;
-      rug.position.set(tx, 0.008, TABLE_Z);
-      rug.receiveShadow = true;
-      this.scene.add(rug);
+      this.addContactShadow(seat.x + .025, seat.z - .015, .86, .68, .85, .02);
     }
 
     // long banquette against the back wall, below the windows
@@ -2245,19 +2146,10 @@ export class CafeScene {
     const benchTop = new THREE.Mesh(new RoundedBoxGeometry(6.82, 0.08, 0.2, 3, 0.03), standard('#f7d08d', { roughness: 0.5, metalness: 0.15 }));
     benchTop.position.set(0, 1.24, -0.3);
     bench.add(benchBase, benchSeat, benchBack, benchTop);
-    bench.position.set(0, 0, -4.72);
-    this.scene.add(bench);
-    this.addContactShadow(0, -4.72, 7.0, 0.9, 0.2);
-
-    // throw cushions along the banquette
-    const throwColors = ['#ffd27d', '#c9b6ea', '#ffb3c7', '#a9e7d2', '#f7cfa4'];
-    for (let i = 0; i < 5; i++) {
-      const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.52, 0.4, 0.14, 4, 0.06), standard(throwColors[i], { roughness: 0.95 }));
-      cushion.position.set(-2.4 + i * 1.2, 0.8, -4.8);
-      cushion.rotation.set(-0.16, 0, (i - 2) * 0.08);
-      cushion.castShadow = true;
-      this.scene.add(cushion);
-    }
+    const paintedBench = this.paint.furnishing('bench', bench, 1.53, false, 4.38);
+    paintedBench.position.set(0, 0, -4.63);
+    this.scene.add(paintedBench);
+    this.addContactShadow(0, -4.63, 4.64, .82, .72);
 
     // framed prints between the windows and the menu board
     for (const x of [-1.93, 1.93]) {
@@ -2304,11 +2196,11 @@ export class CafeScene {
   }
 
   private buildPlants() {
-    const bigPlant = this.makeMonstera(1.2);
+    const bigPlant = this.paint.furnishing('monstera', this.makeMonstera(1.2), 2.88);
     bigPlant.position.set(-6.75, 0, -2.7);
     this.scene.add(bigPlant);
     this.addContactShadow(-6.75, -2.7, 1.15, 1.15, 0.22);
-    const cherry = this.makeCherryPot();
+    const cherry = this.paint.furnishing('blossoms', this.makeCherryPot(), 2.68);
     cherry.position.set(4.65, 0, -4.4);
     cherry.scale.setScalar(1.02);
     this.scene.add(cherry);
